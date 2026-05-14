@@ -1,4 +1,4 @@
-import adapter from '@sveltejs/adapter-static';
+import adapter from '@sveltejs/adapter-cloudflare';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
@@ -8,9 +8,13 @@ const config = {
 	},
 	kit: {
 		adapter: adapter({
-			// For GitHub Pages SPA: fallback 404.html serves the app for any unknown route
-			// See https://github.com/sveltejs/kit/tree/main/packages/adapter-static#spa-mode
-			fallback: '404.html'
+			// SPA fallback for Cloudflare Pages — all unmatched routes serve the SPA shell
+			fallback: 'spa',
+			// Since we use ssr=false, exclude all routes from the Worker function
+			// so Cloudflare Pages serves everything as static assets or SPA fallback
+			routes: {
+				exclude: ['/*']
+			}
 		})
 	}
 };

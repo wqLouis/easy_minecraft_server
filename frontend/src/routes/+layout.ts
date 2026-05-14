@@ -1,4 +1,4 @@
 // Disable SSR — the app relies on localStorage and onMount
-// Prerender root so GitHub Pages has an index.html to serve
+// With adapter-cloudflare + fallback:'spa', everything is client-side rendered
 export const ssr = false;
-export const prerender = true;
+export const prerender = false;

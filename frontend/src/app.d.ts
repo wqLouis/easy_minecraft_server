@@ -6,7 +6,11 @@ declare global {
 		// interface Locals {}
 		// interface PageData {}
 		// interface PageState {}
-		// interface Platform {}
+		interface Platform {
+			env: Record<string, unknown>;
+			cf: Record<string, unknown>;
+			ctx: Record<string, unknown>;
+		}
 	}
 }
 

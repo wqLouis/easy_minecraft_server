@@ -40,7 +40,7 @@ import { activeEndpoint, configured, authenticated, refreshConnectionState } fro
 			<ServerIcon class="size-5" />
 		</button>
 		{#if sidebarOpen}
-			<span class="text-sm font-semibold whitespace-nowrap">MC Manager</span>
+			<span class="text-sm font-semibold whitespace-nowrap">EazyMC Manager</span>
 		{/if}
 	</div>
 
