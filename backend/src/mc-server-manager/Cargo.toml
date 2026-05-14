@@ -1,0 +1,10 @@
+[package]
+name = "mc-server-manager"
+version = "0.1.0"
+edition = "2024"
+description = "Spawn, monitor, and control Minecraft Java Edition server processes"
+
+[dependencies]
+tokio = { version = "1", features = ["process", "io-util", "sync"] }
+thiserror = "2"
+log = "0.4"
