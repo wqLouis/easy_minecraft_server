@@ -28,6 +28,8 @@
 //!     "Main Server".into(),
 //!     config,
 //!     "/srv/minecraft/data".into(),
+//!     "paper".into(),
+//!     "1.21.4".into(),
 //! );
 //!
 //! // Start it

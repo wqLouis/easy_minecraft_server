@@ -21,6 +21,9 @@ use crate::errors::AppError;
 use crate::ip_ban::IpBanManager;
 use crate::models::*;
 use crate::settings::AppSettings;
+
+/// IP whitelist sliding window TTL (12 hours in seconds).
+const WHITELIST_TTL_SECS: i64 = 12 * 60 * 60;
 use mc_server_manager::registry::ServerRegistry;
 
 // ---------------------------------------------------------------------------
@@ -281,4 +284,94 @@ pub fn client_ip(req: &axum::http::Request<axum::body::Body>) -> Option<String> 
         return Some(addr.ip().to_string());
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// IP whitelist enforcement (sliding 12h window)
+// ---------------------------------------------------------------------------
+
+/// Check and enforce the IP whitelist after successful authentication.
+///
+/// Rules (only applies when `ip_whitelist_enabled` is true):
+/// 1. If `user_id + ip` has an active entry → refresh `updated_at`, allow.
+/// 2. If user has NO active entries at all → auto-register `user_id + ip`, allow.
+/// 3. If user has an active entry for a *different* IP → reject.
+///
+/// Expired entries (older than WHITELIST_TTL_SECS since `updated_at`)
+/// are cleaned up before checking.
+pub async fn check_ip_whitelist(
+    db: &SqlitePool,
+    user_id: &str,
+    ip: &str,
+    enabled: bool,
+) -> Result<(), AppError> {
+    if !enabled {
+        return Ok(());
+    }
+
+    let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    // ── 1. Clean expired entries for this user ────────────────
+    let cutoff = chrono::Utc::now() - chrono::Duration::seconds(WHITELIST_TTL_SECS);
+    let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    sqlx::query("DELETE FROM ip_whitelist WHERE user_id = ? AND updated_at < ?")
+        .bind(user_id)
+        .bind(&cutoff_str)
+        .execute(db)
+        .await?;
+
+    // ── 2. Check for existing active entry ────────────────────
+    let existing = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM ip_whitelist WHERE user_id = ? AND ip = ? AND updated_at >= ?",
+    )
+    .bind(user_id)
+    .bind(ip)
+    .bind(&cutoff_str)
+    .fetch_one(db)
+    .await?;
+
+    if existing > 0 {
+        // Slide the expiry window
+        sqlx::query("UPDATE ip_whitelist SET updated_at = ? WHERE user_id = ? AND ip = ?")
+            .bind(&now)
+            .bind(user_id)
+            .bind(ip)
+            .execute(db)
+            .await?;
+        return Ok(());
+    }
+
+    // ── 3. Does this user have ANY active entry? ──────────────
+    let any_active = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM ip_whitelist WHERE user_id = ? AND updated_at >= ?",
+    )
+    .bind(user_id)
+    .bind(&cutoff_str)
+    .fetch_one(db)
+    .await?;
+
+    if any_active == 0 {
+        // First-time or all expired → auto-register this IP
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO ip_whitelist (id, user_id, ip, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(user_id)
+        .bind(ip)
+        .bind(&now)
+        .execute(db)
+        .await?;
+
+        log::info!(
+            "IP {} auto-registered in whitelist for user {}",
+            ip,
+            &user_id[..8]
+        );
+        return Ok(());
+    }
+
+    // ── 4. Active entry exists for a different IP → reject ────
+    Err(AppError::IpNotWhitelisted)
 }

@@ -4,13 +4,13 @@ use argon2::{
     password_hash::{rand_core::OsRng, SaltString},
     Argon2, PasswordHasher,
 };
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use clap::{Parser, Subcommand};
 use sqlx::SqlitePool;
 
 use crate::auth::generate_api_key;
 use crate::blacklist;
-use crate::models::User;
+use crate::models::{IpWhitelistEntry, User};
 use crate::settings;
 
 /// Backend CLI — host-machine administration.
@@ -55,6 +55,13 @@ pub enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// List all active IP whitelist entries.
+    WhitelistList,
+    /// Clear IP whitelist entries for a specific user (by ID or email).
+    WhitelistClear {
+        /// User ID or email to clear
+        user: String,
+    },
 }
 
 /// Dispatch CLI commands.
@@ -75,6 +82,8 @@ pub async fn dispatch(cli: Cli, pool: SqlitePool) -> Result<(), Box<dyn std::err
         Commands::ListUsers => list_users(&pool).await,
         Commands::BanStatus => ban_status(&blacklist_path).await,
         Commands::Unban { ip } => unban(&blacklist_path, &ip).await,
+        Commands::WhitelistList => whitelist_list(&pool).await,
+        Commands::WhitelistClear { user } => whitelist_clear(&pool, &user).await,
         Commands::ResetDb => reset_db(&pool, &settings_path, &blacklist_path).await,
         Commands::InstallService { output } => {
             let path = output.unwrap_or_else(|| {
@@ -185,6 +194,97 @@ async fn ban_status(blacklist_path: &PathBuf) -> Result<(), Box<dyn std::error::
             println!("  - {}", ip);
         }
     }
+
+    Ok(())
+}
+
+// ── Whitelist list ───────────────────────────────────────────────
+
+async fn whitelist_list(pool: &SqlitePool) -> Result<(), Box<dyn std::error::Error>> {
+    let entries = sqlx::query_as::<_, IpWhitelistEntry>(
+        r#"
+        SELECT w.id, w.user_id, w.ip, w.updated_at
+        FROM ip_whitelist w
+        INNER JOIN users u ON u.id = w.user_id
+        ORDER BY w.updated_at DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    if entries.is_empty() {
+        println!("No active IP whitelist entries.");
+        return Ok(());
+    }
+
+    println!("{:<10} {:<30} {:<20} {}", "User ID", "IP", "Last Active", "Status");
+    println!("{}", "-".repeat(80));
+
+    let now = chrono::Utc::now();
+    let ttl_secs = 12 * 60 * 60;
+
+    for entry in &entries {
+        let updated = match chrono::NaiveDateTime::parse_from_str(
+            &entry.updated_at,
+            "%Y-%m-%d %H:%M:%S",
+        ) {
+            Ok(dt) => chrono::Utc.from_utc_datetime(&dt),
+            Err(_) => {
+                println!("{:<10} {:<30} {:<20} {}", &entry.user_id[..8], entry.ip, entry.updated_at, "unknown");
+                continue;
+            }
+        };
+
+        let age = now - updated;
+        let status = if age.num_seconds() < ttl_secs {
+            format!("active ({}h left)", (ttl_secs - age.num_seconds()) / 3600)
+        } else {
+            "expired".into()
+        };
+
+        println!(
+            "{:<10} {:<30} {:<20} {}",
+            &entry.user_id[..8],
+            entry.ip,
+            entry.updated_at,
+            status
+        );
+    }
+
+    Ok(())
+}
+
+// ── Whitelist clear ──────────────────────────────────────────────
+
+async fn whitelist_clear(pool: &SqlitePool, user: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Try to find user by ID or email
+    let user_row = sqlx::query_as::<_, User>(
+        "SELECT * FROM users WHERE id = ? OR email = ?",
+    )
+    .bind(user)
+    .bind(user)
+    .fetch_optional(pool)
+    .await?;
+
+    let user_id = match user_row {
+        Some(u) => u.id,
+        None => {
+            eprintln!("error: user '{}' not found", user);
+            std::process::exit(1);
+        }
+    };
+
+    let result = sqlx::query("DELETE FROM ip_whitelist WHERE user_id = ?")
+        .bind(&user_id)
+        .execute(pool)
+        .await?;
+
+    println!(
+        "✅ Cleared {} whitelist entr{} for user {}",
+        result.rows_affected(),
+        if result.rows_affected() == 1 { "y" } else { "ies" },
+        &user_id[..8]
+    );
 
     Ok(())
 }

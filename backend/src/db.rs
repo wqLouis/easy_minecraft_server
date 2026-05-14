@@ -34,5 +34,25 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS ip_whitelist (
+            id         TEXT PRIMARY KEY NOT NULL,
+            user_id    TEXT NOT NULL,
+            ip         TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_ip_whitelist_user_ip ON ip_whitelist(user_id, ip)",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }

@@ -1,2 +1,5 @@
 # Rust
 target
+
+# Persistent data (database, settings, blacklist)
+data

@@ -26,6 +26,17 @@ pub struct AppSettings {
     /// New instances will use this as their java_path if not specified.
     #[serde(default = "default_java_path")]
     pub java_path: String,
+
+    /// Enable IP whitelist for token authentication.
+    /// When enabled, a token can only be used from the IP that first
+    /// registered it. The binding slides — each successful request
+    /// resets the 12-hour expiry window.
+    #[serde(default = "default_ip_whitelist_enabled")]
+    pub ip_whitelist_enabled: bool,
+}
+
+fn default_ip_whitelist_enabled() -> bool {
+    false
 }
 
 fn default_servers_dir() -> String {
@@ -46,6 +57,7 @@ impl Default for AppSettings {
             fail2ban_max_attempts: 5,
             servers_dir: default_servers_dir(),
             java_path: default_java_path(),
+            ip_whitelist_enabled: default_ip_whitelist_enabled(),
         }
     }
 }

@@ -31,6 +31,12 @@ pub enum AppError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Invalid path: {0}")]
+    InvalidPath(String),
+
+    #[error("IP not whitelisted for this token")]
+    IpNotWhitelisted,
 }
 
 impl From<argon2::password_hash::Error> for AppError {
@@ -52,6 +58,10 @@ impl IntoResponse for AppError {
             }
             AppError::SudoRequired => (StatusCode::FORBIDDEN, "Sudo privileges required"),
             AppError::IpBanned => (StatusCode::FORBIDDEN, "Your IP has been banned"),
+            AppError::InvalidPath(_) => (StatusCode::BAD_REQUEST, "Invalid path"),
+            AppError::IpNotWhitelisted => {
+                (StatusCode::FORBIDDEN, "This token is not authorized from your IP. Authenticate from your home IP first.")
+            }
             AppError::CryptoHash(_) | AppError::Database(_) | AppError::Internal(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
             }

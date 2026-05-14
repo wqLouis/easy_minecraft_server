@@ -12,6 +12,7 @@ use tokio::sync::{broadcast, Mutex};
 
 use crate::error::Error;
 use crate::instance::{ServerConfig, ServerInstance};
+use crate::version::parse_provider;
 use crate::log::LogManager;
 use crate::player::PlayerTracker;
 use crate::properties::ServerProperties;
@@ -163,6 +164,7 @@ impl ServerHandle {
 /// let mut server = ManagedServer::new(
 ///     "main".into(), "Main Server".into(),
 ///     config, "/srv/minecraft/data".into(),
+///     "paper".into(), "1.21.4".into(),
 /// );
 ///
 /// server.start().await.unwrap();
@@ -179,6 +181,8 @@ pub struct ManagedServer {
     /// task on start, so only present before start or after stop).
     process: Arc<Mutex<Option<ServerInstance>>>,
     config: ServerConfig,
+    provider: String,
+    version: String,
 }
 
 impl ManagedServer {
@@ -190,6 +194,8 @@ impl ManagedServer {
         name: String,
         config: ServerConfig,
         _data_dir: PathBuf,
+        provider: String,
+        version: String,
     ) -> Self {
         let (log_tx, _) = broadcast::channel(1024);
 
@@ -214,6 +220,8 @@ impl ManagedServer {
             },
             process: Arc::new(Mutex::new(None)),
             config,
+            provider,
+            version,
         }
     }
 
@@ -221,8 +229,8 @@ impl ManagedServer {
 
     /// Start the server process.
     ///
-    /// A background task reads stdout and feeds the log manager and
-    /// player tracker automatically.
+    /// If the server JAR does not exist locally, it is downloaded
+    /// automatically from the provider's API.
     pub async fn start(&self) -> Result<(), Error> {
         if self.handle.is_running() {
             return Err(Error::other("Server is already running"));
@@ -230,6 +238,27 @@ impl ManagedServer {
 
         // Ensure data directory exists
         tokio::fs::create_dir_all(&self.config.server_dir).await?;
+
+        // Auto-download JAR if it doesn't exist
+        let jar_path = &self.config.jar_path;
+        if !tokio::fs::try_exists(jar_path).await.unwrap_or(false) {
+            log::info!(
+                "Downloading {} {} to {}...",
+                self.provider, self.version, jar_path.display()
+            );
+            let info = mc_server_installer::fetch_latest(
+                parse_provider(&self.provider)?,
+                &self.version,
+            )
+            .await
+            .map_err(|e| Error::other(format!("Failed to resolve download URL: {e}")))?;
+
+            mc_server_installer::download(&info.download_url, jar_path)
+                .await
+                .map_err(|e| Error::other(format!("Failed to download server JAR: {e}")))?;
+
+            log::info!("Downloaded {} to {}", info.name, jar_path.display());
+        }
 
         let instance = ServerInstance::start(&self.config).await?;
         let shared = self.handle.clone();
@@ -325,5 +354,13 @@ impl ManagedServer {
     /// Reference to the launch configuration.
     pub fn config(&self) -> &ServerConfig {
         &self.config
+    }
+
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
     }
 }

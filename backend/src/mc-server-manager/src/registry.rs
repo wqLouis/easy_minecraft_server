@@ -18,24 +18,27 @@ use crate::manager::{ManagedServer, ServerHandle};
 
 /// Describes how to create a managed server instance.
 ///
-/// `server_dir` is filled server-side from `{settings.servers_dir}/{id}`.
-/// Users should **not** send it — it's only present in responses and
-/// persisted configs so the frontend/persistence layer knows the path.
+/// `server_dir` and `jar_path` are filled server-side from settings
+/// and provider/version — users should **not** send them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceConfig {
     pub id: String,
     pub name: String,
-    /// Full path to the server JAR (e.g. `{servers_dir}/{id}/server.jar`).
-    pub jar_path: String,
+    /// Software provider (e.g. "vanilla", "paper", "fabric").
+    pub provider: String,
+    /// Minecraft version (e.g. "1.21.4").
+    pub version: String,
     /// Path to the Java executable.
     pub java_path: String,
     pub min_memory: String,
     pub max_memory: String,
     pub jvm_args: Vec<String>,
-    /// Working directory for this instance — derived server-side.
-    /// Always `{settings.servers_dir}/{id}`.
+    /// Working directory — derived from `{settings.servers_dir}/{id}`.
     #[serde(default)]
     pub server_dir: String,
+    /// Local path to the server JAR — derived from `{server_dir}/server.jar`.
+    #[serde(default)]
+    pub jar_path: String,
 }
 
 /// Summary returned when listing instances.
@@ -294,6 +297,8 @@ impl InstanceConfig {
             self.name.clone(),
             server_config,
             PathBuf::from(&self.server_dir).join("data"),
+            self.provider.clone(),
+            self.version.clone(),
         )
     }
 
@@ -302,6 +307,8 @@ impl InstanceConfig {
         Self {
             id: server.handle().id().to_string(),
             name: server.handle().name().to_string(),
+            provider: server.provider().to_string(),
+            version: server.version().to_string(),
             jar_path: cfg.jar_path.to_string_lossy().to_string(),
             java_path: cfg.java_path.to_string_lossy().to_string(),
             min_memory: cfg.min_memory.clone(),

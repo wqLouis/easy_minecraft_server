@@ -8,6 +8,7 @@ use axum::{
     routing::{delete, get, post, put},
     Extension, Json, Router,
 };
+use chrono::TimeZone;
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::SqlitePool;
@@ -77,7 +78,9 @@ pub async fn serve(
     // ── Routes requiring only auth ─────────────────────────────────
     let authed = Router::new()
         .route("/api/health", get(health))
-        .route("/api/auth/me", get(me));
+        .route("/api/auth/me", get(me))
+        // IP whitelist — current user's remaining time only
+        .route("/api/ipwhitelist", get(whitelist_status_handler));
 
     // ── Sudo-only routes ───────────────────────────────────────────
     let sudo_routes = Router::new()
@@ -242,6 +245,62 @@ struct BlacklistRequest {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// IP Whitelist Management (sudo)
+// ═══════════════════════════════════════════════════════════════════
+
+/// GET /api/ipwhitelist — show remaining whitelist time for the current user.
+/// Returns nothing if whitelist is disabled or no entry exists.
+async fn whitelist_status_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let enabled = state
+        .settings
+        .read()
+        .map(|s| s.ip_whitelist_enabled)
+        .unwrap_or(false);
+
+    if !enabled {
+        return Ok(Json(json!({"enabled": false})));
+    }
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::hours(12))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let entry = sqlx::query_as::<_, (String,)>(
+        "SELECT updated_at FROM ip_whitelist WHERE user_id = ? AND updated_at >= ?",
+    )
+    .bind(&user.id)
+    .bind(&cutoff)
+    .fetch_optional(&state.db)
+    .await?;
+
+    let (remaining, updated_at) = match entry {
+        Some((ts,)) => {
+            let parsed = chrono::NaiveDateTime::parse_from_str(&ts, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .and_then(|dt| {
+                    let expiry = chrono::Utc.from_utc_datetime(&dt) + chrono::Duration::hours(12);
+                    let remaining = expiry - chrono::Utc::now();
+                    let secs = remaining.num_seconds().max(0);
+                    Some((secs, ts.clone()))
+                });
+            parsed.unwrap_or((0, ts))
+        }
+        None => (0, String::new()),
+    };
+
+    Ok(Json(json!({
+        "enabled": true,
+        "active": remaining > 0,
+        "remaining_secs": remaining,
+        "remaining_hours": (remaining as f64) / 3600.0,
+        "updated_at": updated_at,
+    })))
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Server Version Providers
 // ═══════════════════════════════════════════════════════════════════
 
@@ -269,6 +328,76 @@ async fn fetch_version_info(
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Path validation helpers
+// ═══════════════════════════════════════════════════════════════════
+
+/// Validate `jar_path` and `java_path` against a blacklist to prevent
+/// path traversal and execution of non-Java binaries.
+///
+/// This is a defence-in-depth measure — these endpoints already require
+/// sudo privileges, but we still reject obviously dangerous values.
+fn validate_instance_paths(config: &InstanceConfig) -> Result<(), AppError> {
+    let forbidden_components = ["..", "~"];
+    let url_schemes = ["http://", "https://", "ftp://", "file://"];
+
+    // ── jar_path ────────────────────────────────────────────────
+    let jp = config.jar_path.trim();
+    if jp.is_empty() {
+        return Err(AppError::InvalidPath("jar_path must not be empty".into()));
+    }
+    for comp in &forbidden_components {
+        if jp.contains(comp) {
+            return Err(AppError::InvalidPath(
+                format!("jar_path contains forbidden component '{comp}'"),
+            ));
+        }
+    }
+    for scheme in &url_schemes {
+        if jp.to_lowercase().starts_with(scheme) {
+            return Err(AppError::InvalidPath(
+                "jar_path must be a local file path, not a URL".into(),
+            ));
+        }
+    }
+    if !jp.to_lowercase().ends_with(".jar") {
+        return Err(AppError::InvalidPath(
+            "jar_path must end with .jar".into(),
+        ));
+    }
+
+    // ── java_path ───────────────────────────────────────────────
+    let jv = config.java_path.trim();
+    if jv.is_empty() {
+        return Err(AppError::InvalidPath("java_path must not be empty".into()));
+    }
+    for comp in &forbidden_components {
+        if jv.contains(comp) {
+            return Err(AppError::InvalidPath(
+                format!("java_path contains forbidden component '{comp}'"),
+            ));
+            }
+        }
+    for scheme in &url_schemes {
+        if jv.to_lowercase().starts_with(scheme) {
+            return Err(AppError::InvalidPath(
+                "java_path must be a local file path, not a URL".into(),
+            ));
+        }
+    }
+    let jv_filename = std::path::Path::new(jv)
+        .file_name()
+        .map(|f| f.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !jv_filename.contains("java") {
+        return Err(AppError::InvalidPath(
+            "java_path must point to a Java executable (filename must contain 'java')".into(),
+        ));
+    }
+
+    Ok(())
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Server Instance Management
 // ═══════════════════════════════════════════════════════════════════
 
@@ -292,8 +421,9 @@ async fn create_instance(
         .read()
         .map_err(|e| AppError::Internal(format!("Settings lock: {e}")))?;
 
-    // Always derive server_dir from settings — user input is ignored
+    // Always derive server_dir and jar_path from settings
     config.server_dir = format!("{}/{}", settings.servers_dir.trim_end_matches('/'), config.id);
+    config.jar_path = format!("{}/server.jar", config.server_dir);
 
     // Default java_path from settings if not provided
     if config.java_path.is_empty() {
@@ -357,6 +487,9 @@ async fn update_instance_config(
         config.java_path = settings.java_path.clone();
     }
     drop(settings);
+
+    // Validate paths before updating the instance config
+    validate_instance_paths(&config)?;
 
     state
         .server_registry

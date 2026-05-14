@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 
-use crate::auth::{client_ip, extract_bearer_token, resolve_user_from_api_key, AppState};
+use crate::auth::{check_ip_whitelist, client_ip, extract_bearer_token, resolve_user_from_api_key, AppState};
 use crate::blacklist;
 use crate::errors::AppError;
 use crate::models::User;
@@ -55,8 +55,20 @@ pub async fn require_auth(
     };
 
     // Successful auth — clear failure history for this IP
-    if let Some(ip) = client_ip(&req) {
-        state.ip_ban.write().unwrap().clear_failures(&ip);
+    let client_ip_opt = client_ip(&req);
+    if let Some(ref ip) = client_ip_opt {
+        state.ip_ban.write().unwrap().clear_failures(ip);
+    }
+
+    // Enforce IP whitelist (if enabled in settings)
+    if let Some(ref ip) = client_ip_opt {
+        let enabled = state
+            .settings
+            .read()
+            .map(|s| s.ip_whitelist_enabled)
+            .unwrap_or(false);
+
+        check_ip_whitelist(&state.db, &user.id, ip, enabled).await?;
     }
 
     req.extensions_mut().insert(user);

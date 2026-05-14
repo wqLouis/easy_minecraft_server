@@ -58,3 +58,15 @@ pub struct RegisterRequest {
 pub struct MeResponse {
     pub user: UserResponse,
 }
+
+// ---------------------------------------------------------------------------
+// IP Whitelist
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct IpWhitelistEntry {
+    pub id: String,
+    pub user_id: String,
+    pub ip: String,
+    pub updated_at: String,
+}
