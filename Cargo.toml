@@ -1,0 +1,3 @@
+[workspace]
+members = ["backend", "backend/src/mc-server-manager", "backend/src/mc-server-installer"]
+resolver = "2"
