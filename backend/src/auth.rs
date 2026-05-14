@@ -21,6 +21,7 @@ use crate::errors::AppError;
 use crate::ip_ban::IpBanManager;
 use crate::models::*;
 use crate::settings::AppSettings;
+use mc_server_manager::registry::ServerRegistry;
 
 // ---------------------------------------------------------------------------
 // Shared application state
@@ -33,6 +34,7 @@ pub struct AppState {
     pub settings: Arc<RwLock<AppSettings>>,
     pub settings_path: PathBuf,
     pub blacklist_path: PathBuf,
+    pub server_registry: ServerRegistry,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,17 +71,13 @@ fn verify_api_key(api_key: &str, hash: &str) -> Result<bool, AppError> {
 
 /// POST /api/auth/register
 ///
-/// Creates a new regular user with a generated API key.
+/// Creates a new regular (non-sudo) user with a generated API key.
 /// Requires sudo privileges (enforced by middleware).
 pub async fn register(
     State(state): State<Arc<AppState>>,
-    Extension(requester): Extension<User>,
+    Extension(_requester): Extension<User>,
     Json(body): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    if !requester.is_sudoer {
-        return Err(AppError::SudoRequired);
-    }
-
     let email = body.email.trim().to_lowercase();
     if email.is_empty() || !email.contains('@') {
         return Err(AppError::Internal("Invalid email address".to_string()));
@@ -134,6 +132,86 @@ pub async fn me(Extension(user): Extension<User>) -> impl IntoResponse {
     Json(MeResponse {
         user: UserResponse::from(user),
     })
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// User Management (sudo)
+// ═══════════════════════════════════════════════════════════════════
+
+/// GET /api/users — list all users.
+pub async fn list_users(
+    State(state): State<Arc<AppState>>,
+    Extension(_user): Extension<User>,
+) -> Result<Json<Vec<UserResponse>>, AppError> {
+    let users = sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY created_at ASC")
+        .fetch_all(&state.db)
+        .await?;
+
+    let response: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
+    Ok(Json(response))
+}
+
+/// DELETE /api/users/:id — delete a user.
+///
+/// Prevents deleting your own account.
+pub async fn delete_user(
+    State(state): State<Arc<AppState>>,
+    Extension(requester): Extension<User>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    if requester.id == id {
+        return Err(AppError::Internal("Cannot delete your own account".into()));
+    }
+
+    let result = sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(AppError::Internal(format!("User '{id}' not found")));
+    }
+
+    Ok((StatusCode::OK, Json(json!({ "deleted": true, "id": id }))))
+}
+
+/// PUT /api/users/:id — update a user's email.
+///
+/// Sudo privileges cannot be changed via API (use `backend create-sudo` CLI).
+#[derive(serde::Deserialize)]
+pub struct UpdateUserRequest {
+    pub email: Option<String>,
+}
+
+pub async fn update_user(
+    State(state): State<Arc<AppState>>,
+    Extension(_requester): Extension<User>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<UpdateUserRequest>,
+) -> Result<Json<UserResponse>, AppError> {
+    let existing = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(&state.db)
+        .await?
+        .ok_or_else(|| AppError::Internal(format!("User '{id}' not found")))?;
+
+    let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let new_email = body.email.unwrap_or_else(|| existing.email.clone());
+
+    sqlx::query("UPDATE users SET email = ?, updated_at = ? WHERE id = ?")
+        .bind(&new_email)
+        .bind(&now)
+        .bind(&id)
+        .execute(&state.db)
+        .await?;
+
+    let updated = User {
+        email: new_email,
+        updated_at: now,
+        ..existing
+    };
+
+    Ok(Json(UserResponse::from(updated)))
 }
 
 // ---------------------------------------------------------------------------

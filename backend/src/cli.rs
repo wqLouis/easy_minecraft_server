@@ -24,7 +24,11 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Start the HTTP API server
-    Serve,
+    Serve {
+        /// Detach from terminal and run in background
+        #[arg(long, default_value_t = false)]
+        daemon: bool,
+    },
     /// Create a new sudo (admin) user directly in the database.
     CreateSudo {
         /// Email address for the new sudo user
@@ -40,6 +44,17 @@ pub enum Commands {
         /// IP address to unban
         ip: String,
     },
+    /// Drop all tables and reset the database to a clean state.
+    /// Also resets settings and blacklist files.
+    ResetDb,
+    /// Generate and install a systemd user service for the backend.
+    ///
+    /// Default path: ~/.config/systemd/user/easymc-server.service
+    InstallService {
+        /// Output path (default: ~/.config/systemd/user/easymc-server.service)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 /// Dispatch CLI commands.
@@ -48,15 +63,26 @@ pub async fn dispatch(cli: Cli, pool: SqlitePool) -> Result<(), Box<dyn std::err
     let blacklist_path = blacklist::default_blacklist_path();
 
     match cli.command {
-        Commands::Serve => {
+        Commands::Serve { daemon } => {
             env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
                 .init();
+            if daemon {
+                daemonize()?;
+            }
             crate::serve::serve(pool, settings_path, blacklist_path).await
         }
         Commands::CreateSudo { email } => create_sudo(&pool, &email).await,
         Commands::ListUsers => list_users(&pool).await,
         Commands::BanStatus => ban_status(&blacklist_path).await,
         Commands::Unban { ip } => unban(&blacklist_path, &ip).await,
+        Commands::ResetDb => reset_db(&pool, &settings_path, &blacklist_path).await,
+        Commands::InstallService { output } => {
+            let path = output.unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                format!("{home}/.config/systemd/user/easymc-server.service")
+            });
+            install_service(&path, &settings_path).await
+        }
     }
 }
 
@@ -159,6 +185,134 @@ async fn ban_status(blacklist_path: &PathBuf) -> Result<(), Box<dyn std::error::
             println!("  - {}", ip);
         }
     }
+
+    Ok(())
+}
+
+// ── Daemonize ─────────────────────────────────────────────────────
+
+/// Re-launch the server detached from the terminal via nohup.
+fn daemonize() -> Result<(), Box<dyn std::error::Error>> {
+    let exe = std::env::current_exe()?;
+    let log = std::fs::File::create("server.log")?;
+
+    let child = std::process::Command::new("nohup")
+        .arg(&exe)
+        .arg("serve")
+        .stdout(log.try_clone()?)
+        .stderr(log)
+        .stdin(std::process::Stdio::null())
+        .spawn()?;
+
+    println!("✅ Server started in background (PID: {})", child.id());
+    println!("   Logs: ./server.log");
+    println!("   Stop: kill {}", child.id());
+    std::process::exit(0);
+}
+
+// ── Install systemd service ───────────────────────────────────────
+
+async fn install_service(
+    output: &str,
+    settings_path: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let exe = std::env::current_exe()?;
+    let cwd = std::env::current_dir()?;
+    let settings_abs = std::fs::canonicalize(settings_path)
+        .unwrap_or_else(|_| cwd.join(settings_path));
+    let data_dir = settings_abs.parent().unwrap_or(&cwd);
+
+    let unit = format!(
+        r#"[Unit]
+Description=Minecraft Server Backend API
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={} serve
+WorkingDirectory={}
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+StandardOutput=append:{}/server.log
+StandardError=append:{}/server.log
+
+[Install]
+WantedBy=multi-user.target
+"#,
+        exe.display(),
+        cwd.display(),
+        data_dir.display(),
+        data_dir.display(),
+    );
+
+    let path = std::path::Path::new(output);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, &unit)?;
+
+    let service_name = path.file_stem().unwrap().to_string_lossy().to_string();
+    let is_user = output.contains("systemd/user/");
+    let prefix = if is_user { "" } else { "sudo " };
+    let user_flag = if is_user { " --user" } else { "" };
+
+    println!("✅ Systemd{} service written to {}",
+        if is_user { " user" } else { "" },
+        path.display(),
+    );
+    println!();
+    println!("   To enable and start:");
+    println!("     {prefix}systemctl{user_flag} daemon-reload");
+    println!("     {prefix}systemctl{user_flag} enable --now {service_name}");
+    println!();
+    println!("   To view logs:");
+    println!("     {prefix}journalctl{user_flag} -u {service_name} -f");
+    println!();
+    println!("   To stop:");
+    println!("     {prefix}systemctl{user_flag} stop {service_name}");
+
+    Ok(())
+}
+
+// ── Reset DB ──────────────────────────────────────────────────────
+
+async fn reset_db(
+    pool: &SqlitePool,
+    settings_path: &PathBuf,
+    blacklist_path: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    eprint!("⚠️  This will delete ALL users and reset settings. Continue? [y/N] ");
+    std::io::Write::flush(&mut std::io::stderr())?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    if !input.trim().eq_ignore_ascii_case("y") {
+        println!("Aborted.");
+        return Ok(());
+    }
+
+    // Drop the users table
+    sqlx::query("DROP TABLE IF EXISTS users")
+        .execute(pool)
+        .await?;
+    println!("🗑️  Dropped `users` table.");
+
+    // Re-run migrations (recreates the table)
+    crate::db::run_migrations(pool).await?;
+    println!("✅ Recreated `users` table.");
+
+    // Reset settings file
+    let default_settings = crate::settings::AppSettings::default();
+    crate::settings::save_settings(settings_path, &default_settings)?;
+    println!("✅ Reset settings to defaults.");
+
+    // Reset blacklist
+    blacklist::save_blacklist(blacklist_path, &Vec::<String>::new())?;
+    println!("✅ Cleared blacklist.");
+
+    println!();
+    println!("📋 Database reset complete. Use `backend create-sudo` to create a new admin user.");
 
     Ok(())
 }

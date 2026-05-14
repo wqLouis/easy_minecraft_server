@@ -24,4 +24,3 @@ dotenvy = "0.15"
 thiserror = "2"
 schemars = { version = "1", features = ["chrono04"] }
 mc-server-manager = { path = "src/mc-server-manager" }
-mc-server-installer = { path = "src/mc-server-installer" }

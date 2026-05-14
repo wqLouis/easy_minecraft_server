@@ -25,6 +25,7 @@ pub mod modrinth;
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 // ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ impl ServerSoftware {
 // ---------------------------------------------------------------------------
 
 /// Information about a specific server build that can be downloaded.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VersionInfo {
     /// Human-readable name (e.g. `"Paper 1.21.4 build 138"`).
     pub name: String,

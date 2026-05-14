@@ -5,14 +5,21 @@ use serde::Deserialize;
 use crate::error::Error;
 use crate::VersionInfo;
 
+// ---------------------------------------------------------------------------
+// API response models (PaperMC API v2)
+// ---------------------------------------------------------------------------
+
 #[derive(Deserialize)]
 struct ProjectResponse {
-    project: String,
-    versions: HashMap<String, Vec<String>>,
+    #[allow(dead_code)]
+    project_id: String,
+    versions: Vec<String>,
 }
 
 #[derive(Deserialize)]
-struct BuildsResponse(Vec<BuildEntry>);
+struct BuildsResponse {
+    builds: Vec<BuildEntry>,
+}
 
 #[derive(Deserialize)]
 struct BuildEntry {
@@ -23,28 +30,22 @@ struct BuildEntry {
 
 #[derive(Deserialize)]
 struct DownloadEntry {
-    #[allow(dead_code)]
     name: String,
     #[allow(dead_code)]
     sha256: Option<String>,
-    url: Option<String>,
 }
 
-const API_BASE: &str = "https://api.papermc.io/v3";
+const API_BASE: &str = "https://api.papermc.io/v2";
 
-/// Fetch all available Minecraft versions for a PaperMC project.
+// ---------------------------------------------------------------------------
+// Version listing
+// ---------------------------------------------------------------------------
+
+/// Fetch all available Minecraft versions for a PaperMC project (v2 API).
 pub async fn fetch_project_versions(project: &str) -> Result<Vec<String>, Error> {
     let url = format!("{API_BASE}/projects/{project}");
     let resp: ProjectResponse = reqwest::get(&url).await?.json().await?;
-    // Flatten version groups into a sorted list
-    let mut versions: Vec<String> = resp
-        .versions
-        .into_values()
-        .flat_map(|v| v)
-        .collect();
-    // API returns versions grouped by major version, newest first within each group
-    versions.reverse();
-    Ok(versions)
+    Ok(resp.versions)
 }
 
 /// Fetch versions for Paper.
@@ -52,30 +53,34 @@ pub async fn fetch_versions() -> Result<Vec<String>, Error> {
     fetch_project_versions("paper").await
 }
 
+// ---------------------------------------------------------------------------
+// Latest build info
+// ---------------------------------------------------------------------------
+
 /// Fetch the latest stable build for a PaperMC project at a given MC version.
 pub async fn fetch_project_latest(
     project: &str,
     mc_version: &str,
 ) -> Result<VersionInfo, Error> {
-    let url = format!(
-        "{API_BASE}/projects/{project}/versions/{mc_version}/builds?channel=STABLE&limit=1"
-    );
+    let url = format!("{API_BASE}/projects/{project}/versions/{mc_version}/builds");
     let resp: BuildsResponse = reqwest::get(&url).await?.json().await?;
 
-    let build = resp.0.first().ok_or_else(|| {
-        Error::NoStableBuild(project.into(), mc_version.into())
-    })?;
+    // Find the latest STABLE build (filter out ALPHA)
+    let build = resp
+        .builds
+        .iter()
+        .rfind(|b| b.channel == "STABLE" || b.channel == "DEFAULT")
+        .or_else(|| resp.builds.last())
+        .ok_or_else(|| Error::NoStableBuild(project.into(), mc_version.into()))?;
 
-    let download = build.downloads.get("server:default").ok_or_else(|| {
+    let download = build.downloads.get("application").ok_or_else(|| {
         Error::NoVersion(project.into(), format!("{mc_version} build {}", build.build))
     })?;
 
-    let download_url = download.url.clone().unwrap_or_else(|| {
-        format!(
-            "{API_BASE}/projects/{project}/versions/{mc_version}/builds/{}/downloads/server:default",
-            build.build
-        )
-    });
+    let download_url = format!(
+        "{API_BASE}/projects/{project}/versions/{mc_version}/builds/{}/downloads/{}",
+        build.build, download.name
+    );
 
     Ok(VersionInfo {
         name: format!("{} {} build {}", project, mc_version, build.build),

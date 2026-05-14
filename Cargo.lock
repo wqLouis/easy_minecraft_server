@@ -191,7 +191,6 @@ dependencies = [
  "env_logger",
  "hex",
  "log",
- "mc-server-installer",
  "mc-server-manager",
  "rand",
  "schemars",
@@ -1238,9 +1237,15 @@ dependencies = [
 name = "mc-server-manager"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "log",
+ "mc-server-installer",
+ "regex",
+ "serde",
+ "serde_json",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

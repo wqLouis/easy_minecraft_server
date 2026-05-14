@@ -16,12 +16,36 @@ use crate::ip_ban::IpBanManager;
 pub struct AppSettings {
     /// Max failed auth attempts before an IP is blacklisted permanently.
     pub fail2ban_max_attempts: u32,
+
+    /// Default directory where Minecraft server instances are stored.
+    /// New instances will use this as their server_dir if not specified.
+    #[serde(default = "default_servers_dir")]
+    pub servers_dir: String,
+
+    /// Default path to the Java executable.
+    /// New instances will use this as their java_path if not specified.
+    #[serde(default = "default_java_path")]
+    pub java_path: String,
+}
+
+fn default_servers_dir() -> String {
+    "./servers".to_string()
+}
+
+fn default_java_path() -> String {
+    if cfg!(target_os = "windows") {
+        "java".to_string()
+    } else {
+        "/usr/bin/java".to_string()
+    }
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             fail2ban_max_attempts: 5,
+            servers_dir: default_servers_dir(),
+            java_path: default_java_path(),
         }
     }
 }

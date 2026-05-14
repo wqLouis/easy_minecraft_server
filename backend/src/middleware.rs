@@ -10,6 +10,7 @@ use axum::{
 use crate::auth::{client_ip, extract_bearer_token, resolve_user_from_api_key, AppState};
 use crate::blacklist;
 use crate::errors::AppError;
+use crate::models::User;
 
 // ---------------------------------------------------------------------------
 // check_ip_ban — reject banned IPs early (runs before auth)
@@ -63,41 +64,25 @@ pub async fn require_auth(
 }
 
 // ---------------------------------------------------------------------------
-// require_sudo — rejects if not authenticated or not a sudoer
+// require_sudo — rejects if the already-authenticated user is not a sudoer
+//
+// This middleware assumes `require_auth` has already run and inserted a
+// `User` extension. It does NOT re-authenticate.
 // ---------------------------------------------------------------------------
 
 pub async fn require_sudo(
-    State(state): State<Arc<AppState>>,
-    mut req: Request,
+    req: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let api_key = match extract_bearer_token(req.headers()) {
-        Ok(k) => k,
-        Err(e) => {
-            record_failure(&state, &req);
-            return Err(e);
-        }
-    };
-
-    let user = match resolve_user_from_api_key(&state.db, &api_key).await {
-        Ok(u) => u,
-        Err(e) => {
-            record_failure(&state, &req);
-            return Err(e);
-        }
-    };
+    let user = req
+        .extensions()
+        .get::<User>()
+        .ok_or(AppError::ApiKeyNotFound)?;
 
     if !user.is_sudoer {
-        record_failure(&state, &req);
         return Err(AppError::SudoRequired);
     }
 
-    // Successful auth — clear failure history for this IP
-    if let Some(ip) = client_ip(&req) {
-        state.ip_ban.write().unwrap().clear_failures(&ip);
-    }
-
-    req.extensions_mut().insert(user);
     Ok(next.run(req).await)
 }
 
