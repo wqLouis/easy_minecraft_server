@@ -1,6 +1,5 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "eazymc-manager",
 	"compatibility_date": "2026-05-14",
 	"compatibility_flags": ["nodejs_als"],
 	"pages_build_output_dir": ".svelte-kit/cloudflare"
