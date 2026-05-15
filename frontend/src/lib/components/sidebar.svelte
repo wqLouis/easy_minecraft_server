@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { page } from "$app/stores";
-	import { ServerIcon, HomeIcon, SettingsIcon, UsersIcon, PlusIcon, LogOutIcon, CableIcon, MoonIcon, SunIcon, GlobeIcon, PanelLeftCloseIcon, PanelLeftIcon, TriangleAlertIcon } from "@lucide/svelte";
+	import { HomeIcon, SettingsIcon, UsersIcon, PlusIcon, LogOutIcon, CableIcon, MoonIcon, SunIcon, GlobeIcon, PanelLeftCloseIcon, PanelLeftIcon, TriangleAlertIcon } from "@lucide/svelte";
 	import { goto } from "$app/navigation";
 	import { activeEndpoint, configured, authenticated, refreshConnectionState } from "$lib/stores";
-	import { clearAuth, resetApi, getActiveEndpointId, getActiveEndpoint } from "$lib/api";
+	import { clearAuth, resetApi, getActiveEndpointId } from "$lib/api";
 	import { mode, toggleMode } from "mode-watcher";
 
 	// ─── Persist collapse state in localStorage ───────────────────────

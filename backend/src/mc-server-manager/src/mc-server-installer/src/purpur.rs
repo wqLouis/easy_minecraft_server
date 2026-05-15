@@ -18,6 +18,7 @@ struct PurpurVersion {
 #[derive(Deserialize)]
 struct BuildInfo {
     latest: String,
+    #[allow(dead_code)]
     all: Vec<String>,
 }
 

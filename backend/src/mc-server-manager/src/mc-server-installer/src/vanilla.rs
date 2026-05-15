@@ -4,12 +4,14 @@ use crate::error::Error;
 use crate::VersionInfo;
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct VersionManifest {
     latest: Latest,
     versions: Vec<ManifestEntry>,
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct Latest {
     release: String,
     snapshot: String,
@@ -37,6 +39,7 @@ struct Downloads {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct DownloadEntry {
     url: String,
     sha1: String,

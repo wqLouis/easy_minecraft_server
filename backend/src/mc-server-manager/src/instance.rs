@@ -82,6 +82,18 @@ impl ServerInstance {
     /// server is fully loaded — that may take a while).
     pub async fn start(config: &ServerConfig) -> Result<Self, Error> {
         let mut cmd = Command::new(&config.java_path);
+
+        // The child process runs with server_dir as its working directory.
+        // Resolve jar_path to absolute so the JVM can find it regardless of CWD.
+        let absolute_jar = std::path::Path::new(&config.jar_path);
+        let absolute_jar = if absolute_jar.is_relative() {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(absolute_jar)
+        } else {
+            absolute_jar.to_path_buf()
+        };
+
         cmd.current_dir(&config.server_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -90,7 +102,7 @@ impl ServerInstance {
             .arg(format!("-Xmx{}", config.max_memory))
             .args(&config.jvm_args)
             .arg("-jar")
-            .arg(&config.jar_path)
+            .arg(absolute_jar)
             .arg("nogui");
 
         let mut child = cmd.spawn()?;

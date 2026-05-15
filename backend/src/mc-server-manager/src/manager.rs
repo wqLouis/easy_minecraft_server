@@ -239,6 +239,10 @@ impl ManagedServer {
         // Ensure data directory exists
         tokio::fs::create_dir_all(&self.config.server_dir).await?;
 
+        // Auto-accept EULA so the server doesn't exit on first start
+        let eula_path = self.config.server_dir.join("eula.txt");
+        let _ = tokio::fs::write(&eula_path, b"eula=true\n").await;
+
         // Auto-download JAR if it doesn't exist
         let jar_path = &self.config.jar_path;
         if !tokio::fs::try_exists(jar_path).await.unwrap_or(false) {
@@ -260,8 +264,19 @@ impl ManagedServer {
             log::info!("Downloaded {} to {}", info.name, jar_path.display());
         }
 
-        let instance = ServerInstance::start(&self.config).await?;
+        let mut instance = ServerInstance::start(&self.config).await?;
         let shared = self.handle.clone();
+
+        // Give the JVM a moment to fail (bad JAR, missing Java, etc.)
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        if !instance.is_running() {
+            let err = format!(
+                "Server '{}' exited immediately — check JAR path and Java installation",
+                shared.name()
+            );
+            log::error!("{}", err);
+            return Err(Error::other(err));
+        }
 
         // Take the stdout receiver and spawn the reader task
         let mut instance_for_task = Some(instance);

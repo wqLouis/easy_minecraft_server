@@ -9,6 +9,7 @@ struct GameVersions(Vec<GameEntry>);
 #[derive(Deserialize)]
 struct GameEntry {
     version: String,
+    #[allow(dead_code)]
     stable: bool,
 }
 
@@ -30,6 +31,7 @@ struct InstallerVersions(Vec<InstallerEntry>);
 
 #[derive(Deserialize)]
 struct InstallerEntry {
+    #[allow(dead_code)]
     version: String,
     url: String,
     stable: bool,

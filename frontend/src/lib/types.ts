@@ -4,6 +4,8 @@ export interface MinecraftServer {
   id: string;
   name: string;
   running: boolean;
+  provider?: string;
+  version?: string;
   jar_path?: string;
   java_path?: string;
   min_memory?: string;
@@ -15,6 +17,8 @@ export interface MinecraftServer {
 export interface CreateServerRequest {
   id: string;
   name: string;
+  provider: string;
+  version: string;
   jar_path: string;
   java_path: string;
   min_memory: string;

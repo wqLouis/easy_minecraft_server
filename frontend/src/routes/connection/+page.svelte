@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { toast } from "svelte-sonner";
-  import { RefreshCwIcon, CheckCircleIcon, AlertCircleIcon, GlobeIcon, PlusIcon, Trash2Icon, CheckIcon, ServerIcon, KeyIcon, LogOutIcon, TriangleAlertIcon } from "@lucide/svelte";
+  import { RefreshCwIcon, CheckCircleIcon, GlobeIcon, PlusIcon, Trash2Icon, CheckIcon, ServerIcon, KeyIcon, LogOutIcon, TriangleAlertIcon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Card from "$lib/components/ui/card/index.js";

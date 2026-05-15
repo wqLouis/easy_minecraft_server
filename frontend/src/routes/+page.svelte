@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { toast } from "svelte-sonner";
-  import { ServerIcon, PlusIcon, RefreshCwIcon, AlertCircleIcon, GlobeIcon, LogOutIcon, TriangleAlertIcon } from "@lucide/svelte";
+  import { ServerIcon, PlusIcon, RefreshCwIcon, GlobeIcon, LogOutIcon, TriangleAlertIcon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import ServerCard from "$lib/components/server-card.svelte";
@@ -53,17 +53,23 @@
     } finally { authLoading = false }
   }
 
-  async function action(path: string, msg: string) {
-    try { await getApi().post(path); toast.success(msg) }
-    catch (e: unknown) { toast.error(`Failed to ${msg.toLowerCase()}`, { description: e instanceof Error ? e.message : "" }) }
+  async function startServer(id: string) {
+    try {
+      await getApi().post(`/api/instances/${id}/start`);
+      servers = servers.map((s) => s.id === id ? { ...s, running: true } : s);
+      toast.success("Server started");
+    } catch (e: unknown) {
+      toast.error("Failed to start server", { description: e instanceof Error ? e.message : "" });
+    }
   }
-  function startServer(id: string) {
-    servers = servers.map((s) => s.id === id ? { ...s, running: true } : s);
-    action(`/api/instances/${id}/start`, "Server started");
-  }
-  function stopServer(id: string) {
-    servers = servers.map((s) => s.id === id ? { ...s, running: false } : s);
-    action(`/api/instances/${id}/stop`, "Server stopped");
+  async function stopServer(id: string) {
+    try {
+      await getApi().post(`/api/instances/${id}/stop`);
+      servers = servers.map((s) => s.id === id ? { ...s, running: false } : s);
+      toast.success("Server stopped");
+    } catch (e: unknown) {
+      toast.error("Failed to stop server", { description: e instanceof Error ? e.message : "" });
+    }
   }
   async function deleteServer(id: string) {
     if (!confirm("Delete this server permanently?")) return;

@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { toast } from "svelte-sonner";
   import { goto } from "$app/navigation";
-  import { ArrowLeftIcon, ServerIcon, RefreshCwIcon, CheckCircleIcon, AlertCircleIcon } from "@lucide/svelte";
+  import { ArrowLeftIcon, ServerIcon, RefreshCwIcon, CheckCircleIcon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
@@ -57,7 +57,8 @@
     creating = true;
     try {
       await getApi().post("/api/instances", {
-        id: id.trim(), name: name.trim(), jar_path: jarPath.trim() || "/srv/minecraft/server.jar",
+        id: id.trim(), name: name.trim(), provider: selectedProvider, version: selectedVersion,
+        jar_path: jarPath.trim() || "/srv/minecraft/server.jar",
         java_path: javaPath.trim() || "/usr/bin/java", min_memory: minMem, max_memory: maxMem,
         server_dir: "", jvm_args: jvmArgs.trim() ? jvmArgs.split(/\s+/).filter(Boolean) : undefined,
       });
