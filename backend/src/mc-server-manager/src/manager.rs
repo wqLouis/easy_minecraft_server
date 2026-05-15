@@ -801,6 +801,10 @@ impl ManagedServer {
     }
 
     /// Generate a Modrinth modpack (.mrpack) from the installed mods/plugins.
+    /// Generate a Modrinth modpack (.mrpack) from the installed mods/plugins.
+    ///
+    /// Jars are bundled inside `overrides/{mods|plugins}/` for direct extraction,
+    /// and also referenced in `modrinth.index.json` with computed SHA1/SHA512 hashes.
     pub fn generate_modpack(
         &self,
         name: &str,
@@ -821,18 +825,48 @@ impl ManagedServer {
         }
 
         let mod_type = self.mod_type();
-        let files_json: Vec<serde_json::Value> = selected.iter().map(|m| serde_json::json!({
-            "path": format!("overrides/{}/{}", mod_type, m.filename),
-            "fileSize": m.size_bytes,
-            "env": { "server": "required", "client": "unsupported" },
-            "downloads": serde_json::Value::Array(vec![]),
-        })).collect();
+        let mods_dir_name = if mod_type == "mod" { "mods" } else { "plugins" };
+
+        // Compute hashes and build files array
+        let mut files_entries = Vec::new();
+        for m in &selected {
+            let jar_path = dir.join(&m.filename);
+            let data = std::fs::read(&jar_path)
+                .map_err(|e| Error::other(format!("Failed to read {}: {e}", m.filename)))?;
+
+            use sha2::Digest;
+            let sha1 = sha1_smol::Sha1::from(&data).digest().to_string();
+            let sha512 = format!("{:x}", sha2::Sha512::digest(&data));
+
+            files_entries.push(serde_json::json!({
+                "path": format!("{}/{}", mods_dir_name, m.filename),
+                "downloads": serde_json::Value::Array(vec![]),
+                "hashes": { "sha1": sha1, "sha512": sha512 },
+                "fileSize": data.len() as u64,
+            }));
+        }
+
+        // Build dependencies
+        let mut deps = serde_json::json!({ "minecraft": self.version });
+        // Add mod-loader dependency key. Note: Fabric uses "fabric-loader", Forge uses "forge", NeoForge uses "neoforge"
+        let loader_key = match self.provider.to_lowercase().as_str() {
+            "fabric" => Some("fabric-loader"),
+            "forge" => Some("forge"),
+            "neoforge" => Some("neoforge"),
+            "quilt" => Some("quilt-loader"),
+            _ => None,
+        };
+        if let Some(key) = loader_key {
+            deps.as_object_mut()
+                .map(|obj| obj.insert(key.to_string(), serde_json::Value::String("0.0.0".into())));
+        }
 
         let index_json = serde_json::json!({
             "formatVersion": 1, "game": "minecraft", "versionId": version,
-            "name": name, "summary": format!("Server modpack from {} {}", self.provider, self.version),
-            "files": files_json,
-            "dependencies": { "minecraft": self.version }
+            "name": name,
+            "summary": format!("Server modpack generated from {} {}", self.provider, self.version),
+            "files": files_entries,
+            "dependencies": deps,
         });
 
         let out_dir = self.modpack_dir();
@@ -841,29 +875,29 @@ impl ManagedServer {
         let safe_name = name.replace(' ', "-").to_lowercase();
         let out_path = out_dir.join(format!("{}-{}-{}.mrpack", self.handle.id, safe_name, version));
 
+        // Build ZIP
         let file = std::fs::File::create(&out_path)
             .map_err(|e| Error::other(format!("Failed to create modpack: {e}")))?;
         let mut zip = zip::ZipWriter::new(file);
         let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated).unix_permissions(0o644);
 
-        // Write modrinth.index.json
+        // Write modrinth.index.json at ZIP root
         zip.start_file("modrinth.index.json", opts)
             .map_err(|e| Error::other(format!("Failed to write index: {e}")))?;
-        let index_str = serde_json::to_string_pretty(&index_json)
-            .map_err(|e| Error::other(format!("Failed to serialize index: {e}")))?;
-        zip.write_all(index_str.as_bytes())
+        zip.write_all(serde_json::to_string_pretty(&index_json)
+            .map_err(|e| Error::other(format!("Failed to serialize index: {e}")))?.as_bytes())
             .map_err(|e| Error::other(format!("Failed to write index: {e}")))?;
 
-        // Add overrides directory and jar files
-        zip.add_directory(format!("overrides/{mod_type}"), opts)
+        // Bundle jar files under overrides/{mods|plugins}/ for direct extraction
+        zip.add_directory(format!("overrides/{mods_dir_name}"), opts)
             .map_err(|e| Error::other(format!("Failed to add dir: {e}")))?;
         for m in &selected {
             let jar_path = dir.join(&m.filename);
             if !jar_path.is_file() { continue; }
             let data = std::fs::read(&jar_path)
                 .map_err(|e| Error::other(format!("Failed to read {}: {e}", m.filename)))?;
-            zip.start_file(format!("overrides/{}/{}", mod_type, m.filename), opts)
+            zip.start_file(format!("overrides/{}/{}", mods_dir_name, m.filename), opts)
                 .map_err(|e| Error::other(format!("Failed to add {}: {e}", m.filename)))?;
             zip.write_all(&data)
                 .map_err(|e| Error::other(format!("Failed to write {}: {e}", m.filename)))?;

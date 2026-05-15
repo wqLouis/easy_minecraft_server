@@ -91,10 +91,15 @@
         {#if noMp}<p class="mt-1 text-xs text-muted-foreground">None available</p>{/if}
       </div>
     </div>
-    <div class="mt-6">
-      <p class="mb-2 text-xs font-medium text-muted-foreground">Management</p>
-      <div class="grid grid-cols-5 gap-2">
-        {#each nav as n}<a href="{p}/{n.href}" class="flex flex-col items-center gap-1 rounded-lg border p-2 text-center text-xs transition-colors hover:bg-accent/20"><n.icon class="size-5 text-muted-foreground" /><span class="font-medium">{n.label}</span></a>{/each}
+    <div class="mt-8 border-t pt-6">
+      <h2 class="mb-4 text-sm font-semibold text-foreground">Management</h2>
+      <div class="grid grid-cols-5 gap-3">
+        {#each nav as n}
+          <a href="{p}/{n.href}" class="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-xl border bg-card shadow-xs transition-all hover:shadow-md hover:border-accent hover:bg-accent/10">
+            <n.icon class="size-6 shrink-0 text-muted-foreground" />
+            <span class="text-sm font-semibold">{n.label}</span>
+          </a>
+        {/each}
       </div>
     </div>
   {/if}

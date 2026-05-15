@@ -419,6 +419,43 @@ impl ServerRegistry {
         server.kill().await
     }
 
+    /// Gracefully stop all running server instances.
+    pub async fn stop_all(&self) -> usize {
+        let ids: Vec<String> = {
+            let instances = self.instances.read().map_err(|e| Error::other(e.to_string())).ok();
+            instances.map(|m| m.keys().cloned().collect()).unwrap_or_default()
+        };
+        let mut count = 0;
+        for id in &ids {
+            if let Ok(server) = self.get_server(id) {
+                if server.handle().is_running() {
+                    if server.stop().await.is_ok() {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    /// Force-kill all running server instances.
+    pub async fn kill_all(&self) -> usize {
+        let ids: Vec<String> = {
+            let instances = self.instances.read().map_err(|e| Error::other(e.to_string())).ok();
+            instances.map(|m| m.keys().cloned().collect()).unwrap_or_default()
+        };
+        let mut count = 0;
+        for id in &ids {
+            if let Ok(server) = self.get_server(id) {
+                if server.handle().is_running() {
+                    let _ = server.kill().await;
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
     /// Send a console command to a running server.
     pub async fn send_command(&self, id: &str, cmd: &str) -> Result<(), Error> {
         let server = self.get_server(id)?;

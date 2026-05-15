@@ -59,13 +59,16 @@ pub async fn serve(
         .map(|p| p.join("instances.json"))
         .unwrap_or_else(|| PathBuf::from("./data/instances.json"));
 
+    let registry = ServerRegistry::new(instances_path);
+    let shutdown_registry = registry.clone();
+
     let state = Arc::new(AppState {
         db: pool,
         ip_ban: ip_ban_mgr.clone(),
         settings: settings.clone(),
         settings_path: settings_path.clone(),
         blacklist_path: blacklist_path.clone(),
-        server_registry: ServerRegistry::new(instances_path),
+        server_registry: registry,
     });
 
     log::info!("Loaded {blacklist_len} blacklisted IP(s) from {}", blacklist_path.display());
@@ -140,7 +143,32 @@ pub async fn serve(
         .await
         .expect("Failed to bind address");
     log::info!("Backend API listening on http://0.0.0.0:3000");
-    axum::serve(listener, app).await.expect("Server failed");
+
+    // Graceful shutdown: on SIGTERM/SIGINT, stop accepting requests,
+    // then kill all child Java processes before exiting.
+    let shutdown_signal = async {
+        let ctrl_c = tokio::signal::ctrl_c();
+        #[cfg(unix)]
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to set up SIGTERM handler");
+        #[cfg(unix)]
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = term.recv() => {}
+        }
+        #[cfg(not(unix))]
+        ctrl_c.await.expect("Failed to listen for Ctrl+C");
+        log::info!("Shutdown signal received, stopping all server instances...");
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal)
+        .await
+        .expect("Server failed");
+
+    // Kill all running Minecraft server JVMs
+    let count = shutdown_registry.kill_all().await;
+    log::info!("Killed {count} running server instance(s)");
     Ok(())
 }
 

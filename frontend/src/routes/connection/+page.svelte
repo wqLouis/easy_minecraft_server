@@ -10,7 +10,7 @@
   let eps = $state<Endpoint[]>([]);
   let active = $state<Endpoint | null>(null);
   let nName = $state(""), nUrl = $state("");
-  let key = $state(""), testing = $state(false), hover = $state(false);
+  let authUser = $state(""), authToken = $state(""), testing = $state(false), hover = $state(false);
 
   function ref() { eps = getEndpoints(); active = getActiveEndpoint(); refreshConnectionState(); }
   onMount(ref);
@@ -31,7 +31,7 @@
     removeEndpoint(id); ref(); toast.success(`Removed "${e.name}"`);
   }
 
-  function act(e: Endpoint) { setActiveEndpoint(e.id); ref(); key = ""; toast.success(`"${e.name}" activated`); }
+  function act(e: Endpoint) { setActiveEndpoint(e.id); ref(); authUser = ""; authToken = ""; toast.success(`"${e.name}" activated`); }
 
   function deact() {
     if (!active) return;
@@ -49,9 +49,9 @@
   }
 
   async function auth() {
-    if (!active || !key.trim()) return;
+    if (!active || !authUser.trim() || !authToken.trim()) return;
     testing = true;
-    setApiKey(key.trim(), active.id); resetApi();
+    setApiKey(`${authUser.trim()}:${authToken.trim()}`, active.id); resetApi();
     try {
       const me = await getApi().get<{ user: { username: string; is_sudoer: boolean } }>("/api/auth/me");
       toast.success(`Authenticated as ${me.user.username}${me.user.is_sudoer ? " (sudo)" : ""}`); ref();
@@ -113,8 +113,8 @@
           <div class="mb-2 flex items-center gap-2 text-sm text-green-600 dark:text-green-400"><CheckCircleIcon class="size-4 shrink-0" /> Authenticated</div>
           <Button variant="outline" onclick={logout}><LogOutIcon class="size-4" /> Logout</Button>
         {:else}
-          <div class="mb-2"><Input placeholder="username:token" bind:value={key} disabled={testing} /></div>
-          <Button onclick={auth} disabled={!key.trim() || testing}>{#if testing}<RefreshCwIcon class="size-4 animate-spin" />{:else}<KeyIcon class="size-4" />{/if} Authenticate</Button>
+          <div class="mb-2 flex gap-2"><Input placeholder="Username" bind:value={authUser} disabled={testing} class="w-1/3" /><Input type="password" placeholder="Token" bind:value={authToken} disabled={testing} class="flex-1" /></div>
+          <Button onclick={auth} disabled={!authUser.trim() || !authToken.trim() || testing}>{#if testing}<RefreshCwIcon class="size-4 animate-spin" />{:else}<KeyIcon class="size-4" />{/if} Authenticate</Button>
         {/if}
       </div>
     {/if}
