@@ -9,15 +9,13 @@
   import { logViewerState, refreshConnectionState } from "$lib/stores";
   import {
     getApi, getActiveEndpoint, getActiveEndpointId, isConfigured, isAuthenticated,
-    setApiKey, clearAuth, resetApi,
+    clearAuth, resetApi,
   } from "$lib/api";
   import type { MinecraftServer } from "$lib/types";
 
   let servers = $state<MinecraftServer[]>([]);
   let loading = $state(true);
   let error = $state("");
-  let authKey = $state("");
-  let authLoading = $state(false);
 
   const authed = $derived(isAuthenticated());
   const configured = $derived(isConfigured());
@@ -34,23 +32,6 @@
     try { servers = await getApi().get<MinecraftServer[]>("/api/instances") }
     catch (e: unknown) { error = e instanceof Error ? e.message : "Failed" }
     finally { loading = false }
-  }
-
-  async function handleAuth() {
-    if (!authKey.trim()) return;
-    const epId = getActiveEndpointId();
-    if (!epId) return;
-    authLoading = true;
-    setApiKey(authKey.trim(), epId);
-    resetApi();
-    try {
-      await getApi().get("/api/auth/me");
-      refreshConnectionState();
-      loadServers();
-    } catch (e: unknown) {
-      clearAuth(epId);
-      toast.error("Auth failed", { description: e instanceof Error ? e.message : "" });
-    } finally { authLoading = false }
   }
 
   async function startServer(id: string) {
@@ -107,22 +88,11 @@
 
   {:else if !authed}
     <div class="flex flex-1 items-center justify-center" style="min-height: calc(100dvh - 3rem)">
-      <Card.Root size="sm" class="w-full max-w-md">
-        <Card.Header>
-          <div class="mb-2 flex items-center gap-2"><ServerIcon class="size-5" /><Card.Title>Authentication</Card.Title></div>
-          <Card.Description>API key for <span class="font-medium">{activeEp?.name}</span></Card.Description>
-        </Card.Header>
-        <Card.Content class="grid gap-4">
-          <input type="password" placeholder="Paste API key" bind:value={authKey} disabled={authLoading}
-            class="dark:bg-input/30 border-input h-9 w-full rounded-md border bg-transparent px-2.5 py-1 text-sm shadow-xs outline-none" />
-        </Card.Content>
-        <Card.Footer class="flex-col gap-2">
-          <Button class="w-full" onclick={handleAuth} disabled={!authKey.trim() || authLoading}>{authLoading ? "Authenticating…" : "Authenticate"}</Button>
-          <Button variant="ghost" class="w-full" onclick={() => { clearAuth(getActiveEndpointId() ?? undefined); resetApi(); refreshConnectionState() }}>Switch endpoint</Button>
-        </Card.Footer>
-      </Card.Root>
+      <div class="text-center">
+        <ServerIcon class="mx-auto mb-3 size-10 text-muted-foreground" />
+        <p class="text-sm text-muted-foreground">Authenticate via the sidebar or Connection page.</p>
+      </div>
     </div>
-
   {:else}
     <div class="mb-6 flex items-center justify-between">
       <div>
