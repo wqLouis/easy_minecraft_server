@@ -200,8 +200,17 @@ impl ServerRegistry {
 
     /// Start a server instance.
     pub async fn start(&self, id: &str) -> Result<(), Error> {
-        let server = self.get_server(id)?;
-        server.start().await
+        let mut server = self.get_server(id)?;
+        server.start().await?;
+        // Re-insert so config changes (e.g. installer-updated jar_path) persist
+        {
+            let mut instances = self
+                .instances
+                .write()
+                .map_err(|e| Error::other(format!("Registry lock: {e}")))?;
+            instances.insert(id.to_string(), server);
+        }
+        self.save_configs()
     }
 
     /// Stop a server instance.

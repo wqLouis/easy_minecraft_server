@@ -17,6 +17,10 @@ use crate::settings;
 #[derive(Parser, Debug)]
 #[command(name = "backend", version, about = "Minecraft server backend")]
 pub struct Cli {
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, default_value = "info", global = true)]
+    pub log_level: String,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -66,13 +70,18 @@ pub enum Commands {
 
 /// Dispatch CLI commands.
 pub async fn dispatch(cli: Cli, pool: SqlitePool) -> Result<(), Box<dyn std::error::Error>> {
+    // Init logger once with the user-requested level
+    let filter = cli.log_level.to_lowercase();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(&filter),
+    )
+    .init();
+
     let settings_path = settings::default_settings_path();
     let blacklist_path = blacklist::default_blacklist_path();
 
     match cli.command {
         Commands::Serve { daemon } => {
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-                .init();
             if daemon {
                 daemonize()?;
             }

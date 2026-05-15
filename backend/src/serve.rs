@@ -9,7 +9,7 @@ use axum::{
     Extension, Json, Router,
 };
 use chrono::TimeZone;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
 use tower_http::cors::{Any, CorsLayer};
@@ -321,10 +321,20 @@ async fn fetch_versions_handler(
 async fn fetch_version_info(
     Path((provider, version)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    #[derive(Serialize)]
+    struct SafeVersionInfo {
+        name: String,
+        build: Option<String>,
+        java_version: Option<u32>,
+    }
     let info = mc_server_manager::fetch_latest(&provider, &version)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    Ok(Json(json!(info)))
+    Ok(Json(json!(SafeVersionInfo {
+        name: info.name,
+        build: info.build,
+        java_version: info.java_version,
+    })))
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -481,8 +491,9 @@ async fn update_instance_config(
         .read()
         .map_err(|e| AppError::Internal(format!("Settings lock: {e}")))?;
 
-    // Always derive server_dir from settings
+    // Always derive server_dir and jar_path from settings
     config.server_dir = format!("{}/{}", settings.servers_dir.trim_end_matches('/'), &id);
+    config.jar_path = format!("{}/server.jar", config.server_dir);
     if config.java_path.is_empty() {
         config.java_path = settings.java_path.clone();
     }
@@ -508,7 +519,10 @@ async fn start_instance(
         .server_registry
         .start(&id)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .map_err(|e| {
+            log::error!("Failed to start instance '{}': {}", id, e);
+            AppError::Internal(e.to_string())
+        })?;
     Ok(Json(json!({ "started": true, "id": id })))
 }
 

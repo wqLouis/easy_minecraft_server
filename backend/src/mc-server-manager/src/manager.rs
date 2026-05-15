@@ -231,7 +231,10 @@ impl ManagedServer {
     ///
     /// If the server JAR does not exist locally, it is downloaded
     /// automatically from the provider's API.
-    pub async fn start(&self) -> Result<(), Error> {
+    /// For installer-based providers (Fabric, Forge, NeoForge), the
+    /// installer is run to produce the actual server JAR, and
+    /// `self.config.jar_path` is updated to point to it.
+    pub async fn start(&mut self) -> Result<(), Error> {
         if self.handle.is_running() {
             return Err(Error::other("Server is already running"));
         }
@@ -246,10 +249,6 @@ impl ManagedServer {
         // Auto-download JAR if it doesn't exist
         let jar_path = &self.config.jar_path;
         if !tokio::fs::try_exists(jar_path).await.unwrap_or(false) {
-            log::info!(
-                "Downloading {} {} to {}...",
-                self.provider, self.version, jar_path.display()
-            );
             let info = mc_server_installer::fetch_latest(
                 parse_provider(&self.provider)?,
                 &self.version,
@@ -257,11 +256,85 @@ impl ManagedServer {
             .await
             .map_err(|e| Error::other(format!("Failed to resolve download URL: {e}")))?;
 
-            mc_server_installer::download(&info.download_url, jar_path)
-                .await
-                .map_err(|e| Error::other(format!("Failed to download server JAR: {e}")))?;
+            let is_installer = matches!(self.provider.to_lowercase().as_str(), "fabric" | "forge" | "neoforge");
 
-            log::info!("Downloaded {} to {}", info.name, jar_path.display());
+            if is_installer {
+                // Download installer to a temp path, run it, then point jar_path to the result
+                let installer_jar = self.config.server_dir.join(".installer.jar");
+                log::info!("Downloading {} {} installer to {}...", self.provider, self.version, installer_jar.display());
+                mc_server_installer::download(&info.download_url, &installer_jar)
+                    .await
+                    .map_err(|e| Error::other(format!("Failed to download installer: {e}")))?;
+
+                log::info!("Running installer for {} {}...", self.provider, self.version);
+                // Resolve installer path to absolute — JVM's CWD differs from backend's
+                let abs_installer = std::fs::canonicalize(&installer_jar)
+                    .unwrap_or_else(|_| installer_jar.clone());
+                let status = tokio::process::Command::new(&self.config.java_path)
+                    .arg("-jar")
+                    .arg(&abs_installer)
+                    .args(match self.provider.to_lowercase().as_str() {
+                        "fabric" => vec![
+                            "server",
+                            "-dir",
+                            ".",   // CWD is already server_dir
+                            "-mcversion",
+                            &self.version,
+                            "-downloadMinecraft",
+                        ],
+                        _ => vec!["--installServer"],
+                    })
+                    .current_dir(&self.config.server_dir)
+                    .status()
+                    .await
+                    .map_err(|e| Error::other(format!("Failed to run installer: {e}")))?;
+
+                if !status.success() {
+                    return Err(Error::other(format!(
+                        "{} installer exited with error",
+                        self.provider
+                    )));
+                }
+
+                // Determine the actual server JAR produced by the installer
+                let actual_jar = match self.provider.to_lowercase().as_str() {
+                    "fabric" => self.config.server_dir.join("fabric-server-launch.jar"),
+                    _ => {
+                        // Forge/NeoForge: look for forge-{version}-server.jar / -universal.jar
+                        let mut found: Option<std::path::PathBuf> = None;
+                        if let Ok(entries) = std::fs::read_dir(&self.config.server_dir) {
+                            for entry in entries.flatten() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                if name.ends_with("-server.jar") || name.ends_with("-universal.jar") {
+                                    found = Some(entry.path());
+                                    break;
+                                }
+                            }
+                        }
+                        found.unwrap_or_else(|| self.config.server_dir.join("server.jar"))
+                    }
+                };
+
+                // Clean up installer JAR
+                let _ = tokio::fs::remove_file(&installer_jar).await;
+
+                // Point config to the actual server JAR
+                self.config.jar_path = actual_jar;
+                log::info!(
+                    "Installer finished, server JAR: {}",
+                    self.config.jar_path.display()
+                );
+            } else {
+                // Direct-download providers (Vanilla, Paper, Purpur, etc.)
+                log::info!(
+                    "Downloading {} {} to {}...",
+                    self.provider, self.version, jar_path.display()
+                );
+                mc_server_installer::download(&info.download_url, jar_path)
+                    .await
+                    .map_err(|e| Error::other(format!("Failed to download server JAR: {e}")))?;
+                log::info!("Downloaded {} to {}", info.name, jar_path.display());
+            }
         }
 
         let mut instance = ServerInstance::start(&self.config).await?;

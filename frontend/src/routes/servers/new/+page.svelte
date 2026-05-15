@@ -11,10 +11,10 @@
   let providers = $state<{ name: string; label: string }[]>([]);
   let versions = $state<string[]>([]);
   let selectedProvider = $state(""), selectedVersion = $state("");
-  let versionInfo = $state<{ name: string; mc_version: string; build: string; download_url: string; sha1: string | null; java_version: string | null } | null>(null);
+  let versionInfo = $state<{ name: string; build: string; java_version: string | null } | null>(null);
   let loadingP = $state(true), loadingV = $state(false), loadingI = $state(false), creating = $state(false);
 
-  let id = $state(""), name = $state(""), jarPath = $state("");
+  let id = $state(""), name = $state("");
   let javaPath = $state("/usr/bin/java"), minMem = $state("1G"), maxMem = $state("4G"), jvmArgs = $state("-XX:+UseG1GC");
 
   onMount(() => {
@@ -43,11 +43,10 @@
     if (!v || !selectedProvider) return;
     loadingI = true;
     try {
-      const info = await getApi().get<{ name: string; mc_version: string; build: string; download_url: string; sha1: string | null; java_version: string | null }>(`/api/providers/${selectedProvider}/versions/${v}`);
+      const info = await getApi().get<{ name: string; build: string; java_version: string | null }>(`/api/providers/${selectedProvider}/versions/${v}`);
       versionInfo = info;
       const slug = `${selectedProvider}-${v.replace(/\./g, "-")}`;
       id = slug; name = `${providers.find((p) => p.name === selectedProvider)?.label ?? selectedProvider} ${v}`;
-      jarPath = info.download_url;
     } catch (e: unknown) { toast.error("Failed to fetch version info", { description: e instanceof Error ? e.message : "" }) }
     finally { loadingI = false }
   }
@@ -58,7 +57,6 @@
     try {
       await getApi().post("/api/instances", {
         id: id.trim(), name: name.trim(), provider: selectedProvider, version: selectedVersion,
-        jar_path: jarPath.trim() || "/srv/minecraft/server.jar",
         java_path: javaPath.trim() || "/usr/bin/java", min_memory: minMem, max_memory: maxMem,
         server_dir: "", jvm_args: jvmArgs.trim() ? jvmArgs.split(/\s+/).filter(Boolean) : undefined,
       });
@@ -135,10 +133,6 @@
           </div>
         </div>
 
-        <div class="grid gap-2">
-          <label for="jar" class="text-sm font-medium">JAR Path / Download URL</label>
-          <Input id="jar" placeholder="/srv/minecraft/server.jar" bind:value={jarPath} disabled={creating} />
-        </div>
         <div class="grid gap-2">
           <label for="java" class="text-sm font-medium">Java Binary</label>
           <Input id="java" placeholder="/usr/bin/java" bind:value={javaPath} disabled={creating} />

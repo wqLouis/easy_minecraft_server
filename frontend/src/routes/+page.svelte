@@ -60,6 +60,7 @@
       toast.success("Server deleted");
     } catch (e: unknown) { toast.error("Failed to delete", { description: e instanceof Error ? e.message : "" }) }
   }
+  function viewServer(id: string) { goto(`/servers/${id}`) }
   function viewLogs(id: string) {
     const s = servers.find((s) => s.id === id);
     if (s) logViewerState.set({ open: true, serverId: id, serverName: s.name });
@@ -134,7 +135,7 @@
     {:else}
       <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {#each servers as server (server.id)}
-          <ServerCard {server} onStart={startServer} onStop={stopServer} onDelete={deleteServer} onViewLogs={viewLogs} />
+          <ServerCard {server} onStart={startServer} onStop={stopServer} onDelete={deleteServer} onViewLogs={viewLogs} onView={viewServer} />
         {/each}
       </div>
     {/if}
