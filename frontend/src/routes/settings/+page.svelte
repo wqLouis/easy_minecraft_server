@@ -1,251 +1,126 @@
 <script lang="ts">
-	import { onMount } from "svelte";
-	import { goto } from "$app/navigation";
-import { toast } from "svelte-sonner";
-	import { SaveIcon, RefreshCwIcon, AlertCircleIcon, GlobeIcon, KeyIcon } from "@lucide/svelte";
-	import { Button } from "$lib/components/ui/button/index.js";
-	import { Input } from "$lib/components/ui/input/index.js";
-	import { Badge } from "$lib/components/ui/badge/index.js";
-	import * as Card from "$lib/components/ui/card/index.js";
-	import { isAuthenticated, isConfigured, getApi, getActiveEndpoint, getActiveEndpointId, setApiKey, clearAuth, resetApi } from "$lib/api";
-import { refreshConnectionState } from "$lib/stores";
-	import type { JsonSchema, JsonSchemaProperty } from "$lib/types";
+  import { onMount } from "svelte";
+  import { toast } from "svelte-sonner";
+  import { SaveIcon, RefreshCwIcon, AlertCircleIcon } from "@lucide/svelte";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+  import { Badge } from "$lib/components/ui/badge/index.js";
+  import * as Card from "$lib/components/ui/card/index.js";
+  import { Separator } from "$lib/components/ui/separator/index.js";
+  import { isAuthenticated, isConfigured, getApi } from "$lib/api";
+  import type { JsonSchema, JsonSchemaProperty } from "$lib/types";
 
-	// --- State ---
+  let schema: JsonSchema | null = $state(null);
+  let settings: Record<string, unknown> = $state({});
+  let loading = $state(true), saving = $state(false), error = $state("");
 
-	type PagePhase = "no-endpoint" | "no-auth" | "loading" | "ready" | "error";
-	let phase = $state<PagePhase>("loading");
+  onMount(() => {
+    if (!isConfigured() || !isAuthenticated()) return;
+    loadSettings();
+  });
 
-	let schema: JsonSchema | null = $state(null);
-	let settings: Record<string, unknown> = $state({});
-	let saving = $state(false);
-	let errorMsg = $state("");
+  async function loadSettings() {
+    loading = true; error = "";
+    try {
+      const api = getApi();
+      const [s, v] = await Promise.all([
+        api.get<JsonSchema>("/api/settings/schema"),
+        api.get<Record<string, unknown>>("/api/settings"),
+      ]);
+      schema = s; settings = v;
+    } catch (e: unknown) {
+      error = e instanceof Error ? e.message : "Failed";
+      toast.error("Failed to load settings", { description: error });
+    } finally { loading = false }
+  }
 
-	// Auth form
-	let authKey = $state("");
-	let authLoading = $state(false);
+  async function handleSave() {
+    saving = true;
+    try { settings = await getApi().put<Record<string, unknown>>("/api/settings", settings); toast.success("Saved") }
+    catch (e: unknown) { toast.error("Failed", { description: e instanceof Error ? e.message : "" }) }
+    finally { saving = false }
+  }
 
-	onMount(() => {
-		if (!isConfigured()) {
-			phase = "no-endpoint";
-		} else if (!isAuthenticated()) {
-			phase = "no-auth";
-		} else {
-			loadSettings();
-		}
-	});
+  function updateField(key: string, value: unknown) { settings = { ...settings, [key]: value } }
 
-	async function loadSettings() {
-		phase = "loading";
-		errorMsg = "";
-		try {
-			const api = getApi();
-			const [schemaData, settingsData] = await Promise.all([
-				api.getSettingsSchema(),
-				api.getSettings(),
-			]);
-			schema = schemaData;
-			settings = settingsData;
-			phase = "ready";
-		} catch (e: unknown) {
-			errorMsg = e instanceof Error ? e.message : "Failed to load settings";
-			phase = "error";
-			toast.error("Failed to load settings", { description: errorMsg });
-		}
-	}
+  function parseNum(raw: string, type: string): number | string {
+    if (raw === "") return "";
+    const n = type === "integer" ? parseInt(raw, 10) : parseFloat(raw);
+    return isNaN(n) ? raw : n;
+  }
 
-	async function handleSave() {
-		saving = true;
-		try {
-			const api = getApi();
-			const updated = await api.updateSettings(settings);
-			settings = updated;
-			toast.success("Settings saved");
-		} catch (e: unknown) {
-			toast.error("Failed to save settings", {
-				description: e instanceof Error ? e.message : "Unknown error",
-			});
-		} finally {
-			saving = false;
-		}
-	}
-
-	function updateField(key: string, value: unknown) {
-		settings = { ...settings, [key]: value };
-	}
-
-	// --- Auth ---
-
-	async function handleAuth() {
-		const key = authKey.trim();
-		if (!key) return;
-		const epId = getActiveEndpointId();
-		if (!epId) return;
-		authLoading = true;
-		setApiKey(key, epId);
-		resetApi();
-		try {
-			const api = getApi();
-			await api.getMe();
-			refreshConnectionState();
-			loadSettings();
-		} catch (e: unknown) {
-			clearAuth(epId);
-			toast.error("Authentication failed", {
-				description: e instanceof Error ? e.message : "Unknown error",
-			});
-		} finally {
-			authLoading = false;
-		}
-	}
-
-	const activeEp = $derived(getActiveEndpoint());
+  function humanize(key: string): string {
+    return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
 </script>
 
 <div class="mx-auto max-w-2xl px-6 py-6">
-	<div class="mb-6">
-		<h1 class="text-xl font-semibold">Settings</h1>
-		<p class="text-sm text-muted-foreground">
-			Backend configuration for
-			<span class="font-medium">{activeEp?.name ?? "selected endpoint"}</span>
-		</p>
-	</div>
+  <div class="mb-6">
+    <h1 class="text-xl font-semibold">Settings</h1>
+    <p class="text-sm text-muted-foreground">Backend configuration.</p>
+  </div>
 
-	<!-- No endpoint selected -->
-	{#if phase === "no-endpoint"}
-		<Card.Root size="sm" class="mx-auto max-w-md">
-			<Card.Header>
-				<Card.Title>No Endpoint Selected</Card.Title>
-				<Card.Description>
-					Go to the Connection tab to select an active endpoint first.
-				</Card.Description>
-			</Card.Header>
-			<Card.Footer>
-				<Button variant="outline" class="w-full" onclick={() => goto("/connection")}>
-					<GlobeIcon class="size-4" />
-					Open Connection
-				</Button>
-			</Card.Footer>
-		</Card.Root>
+  {#if loading}
+    <div class="flex items-center justify-center py-20"><RefreshCwIcon class="size-8 animate-spin text-muted-foreground" /></div>
+  {:else if error}
+    <div class="flex flex-col items-center justify-center gap-4 py-20 text-center">
+      <AlertCircleIcon class="size-12 text-muted-foreground" />
+      <p class="text-sm text-muted-foreground">{error}</p>
+      <Button onclick={loadSettings}>Retry</Button>
+    </div>
+  {:else if schema}
+    <form onsubmit={(e) => { e.preventDefault(); handleSave() }} class="grid gap-6">
+      <div class="space-y-5">
+        {#each Object.entries(schema.properties ?? {}) as [key, prop], i (key)}
+          {@const p = prop as JsonSchemaProperty}
+          {@const label = p.title ?? humanize(key)}
+          <div class="grid gap-2">
+            <div class="flex items-center justify-between">
+              <label for={"s-" + key} class="flex items-center gap-1.5 text-sm font-medium">
+                {label}{#if schema.required?.includes(key)}<span class="text-destructive" title="Required">*</span>{/if}
+              </label>
+              {#if p.type === "integer" || p.type === "number"}
+                <Badge variant="outline" class="text-[10px]">{p.type === "integer" ? "Integer" : "Number"}</Badge>
+              {/if}
+            </div>
+            {#if p.description}<p class="text-xs text-muted-foreground">{p.description}</p>{/if}
 
-	<!-- Not authenticated -->
-	{:else if phase === "no-auth"}
-		<Card.Root size="sm" class="mx-auto max-w-md">
-			<Card.Header>
-				<Card.Title>Authentication Required</Card.Title>
-				<Card.Description>
-					Settings for <span class="font-medium">{activeEp?.name}</span> require sudo privileges.
-				</Card.Description>
-			</Card.Header>
-			<Card.Content class="grid gap-4">
-				<div class="grid gap-2">
-					<label for="settings-auth-key" class="text-sm font-medium">API Key</label>
-					<Input id="settings-auth-key" type="password" placeholder="Paste your API key" bind:value={authKey} disabled={authLoading} />
-				</div>
-			</Card.Content>
-			<Card.Footer>
-				<Button class="w-full" onclick={handleAuth} disabled={!authKey.trim() || authLoading}>
-					{authLoading ? "Authenticating…" : "Authenticate"}
-				</Button>
-			</Card.Footer>
-		</Card.Root>
-
-	<!-- Loading / Error / Ready -->
-	{:else if phase === "loading"}
-		<div class="flex items-center justify-center py-20">
-			<RefreshCwIcon class="size-8 animate-spin text-muted-foreground" />
-		</div>
-
-	{:else if phase === "error"}
-		<div class="flex flex-col items-center justify-center gap-4 py-20 text-center">
-			<AlertCircleIcon class="size-12 text-muted-foreground" />
-			<div>
-				<h2 class="text-lg font-medium">Failed to Load</h2>
-				<p class="mt-1 text-sm text-muted-foreground">{errorMsg}</p>
-			</div>
-			<Button onclick={loadSettings}>Retry</Button>
-		</div>
-
-	{:else if phase === "ready" && schema}
-		<form onsubmit={(e) => { e.preventDefault(); handleSave(); }} class="grid gap-6">
-			{#each Object.entries(schema.properties ?? {}) as [key, prop] (key)}
-				{@const typedProp = prop as JsonSchemaProperty}
-				<div class="grid gap-2">
-					<label for={"setting-" + key} class="flex items-center gap-1 text-sm font-medium">
-						{prop.title ?? humanizeKey(key)}
-						{#if schema.required?.includes(key)}
-							<span class="text-destructive">*</span>
-						{/if}
-					</label>
-					{#if typedProp.description}
-						<p class="text-xs text-muted-foreground">{typedProp.description}</p>
-					{/if}
-
-					{#if typedProp.type === "boolean"}
-						<div class="flex items-center gap-2">
-							<input
-								id={"setting-" + key}
-								type="checkbox"
-								checked={settings[key] as boolean ?? false}
-								onchange={(e) => updateField(key, (e.target as HTMLInputElement).checked)}
-								class="border-input h-4 w-4 rounded border accent-primary"
-							/>
-							<span class="text-sm">Enabled</span>
-						</div>
-					{:else if typedProp.type === "integer" || typedProp.type === "number"}
-						<Input
-							id={"setting-" + key}
-							type="number"
-							min={typedProp.minimum}
-							max={typedProp.maximum}
-							step={typedProp.type === "integer" ? 1 : 0.01}
-							value={settings[key] as number ?? ""}
-							oninput={(e) => updateField(key, typedProp.type === "integer" ? parseInt((e.target as HTMLInputElement).value, 10) : parseFloat((e.target as HTMLInputElement).value))}
-						/>
-					{:else if typedProp.type === "string" && typedProp.enum}
-						<select
-							id={"setting-" + key}
-							value={settings[key] as string ?? ""}
-							onchange={(e) => updateField(key, (e.target as HTMLSelectElement).value)}
-							class="dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-md border bg-transparent px-2.5 py-1 text-sm shadow-xs focus-visible:ring-3 outline-none"
-						>
-							{#each typedProp.enum as opt}
-								<option value={opt}>{opt}</option>
-							{/each}
-						</select>
-					{:else}
-						<Input
-							id={"setting-" + key}
-							type="text"
-							value={settings[key] as string ?? ""}
-							oninput={(e) => updateField(key, (e.target as HTMLInputElement).value)}
-						/>
-					{/if}
-				</div>
-			{/each}
-
-			<div class="flex items-center gap-2 pt-2">
-				<Button type="submit" disabled={saving}>
-					{#if saving}
-						<RefreshCwIcon class="size-4 animate-spin" />
-					{:else}
-						<SaveIcon class="size-4" />
-					{/if}
-					Save Settings
-				</Button>
-				<Button variant="outline" type="button" onclick={loadSettings} disabled={saving}>
-					<RefreshCwIcon class="size-4" />
-					Reset
-				</Button>
-			</div>
-		</form>
-	{/if}
+            {#if p.type === "boolean"}
+              <div class="flex items-center gap-3">
+                <button type="button" role="switch" aria-label={label} aria-checked={!!settings[key]} onclick={() => updateField(key, !settings[key])}
+                  class="focus-visible:ring-ring/50 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus-visible:ring-3 outline-none {!!settings[key] ? 'bg-primary' : 'bg-input'}">
+                  <span class="pointer-events-none block size-4 rounded-full bg-white shadow-sm transition-transform {!!settings[key] ? 'translate-x-4' : 'translate-x-0'}"></span>
+                </button>
+                <span class="text-sm">{!!settings[key] ? 'Enabled' : 'Disabled'}</span>
+              </div>
+            {:else if p.type === "integer" || p.type === "number"}
+              <Input id={"s-" + key} type="number" min={p.minimum} max={p.maximum} step={p.type === "integer" ? 1 : 0.01}
+                value={settings[key] ?? ""} oninput={(e) => updateField(key, parseNum((e.target as HTMLInputElement).value, p.type!))} />
+            {:else if p.type === "string" && p.enum}
+              <select id={"s-" + key} value={settings[key] as string ?? ""} onchange={(e) => updateField(key, (e.target as HTMLSelectElement).value)}
+                class="dark:bg-input/30 border-input focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-md border bg-transparent px-2.5 py-1 text-sm outline-none">
+                {#each p.enum as opt}<option value={opt}>{opt}</option>{/each}
+              </select>
+            {:else if p.format === "uri" || p.format === "url"}
+              <Input id={"s-" + key} type="url" placeholder="https://" value={settings[key] as string ?? ""}
+                oninput={(e) => updateField(key, (e.target as HTMLInputElement).value)} />
+            {:else}
+              <Input id={"s-" + key} type="text" value={settings[key] as string ?? ""}
+                oninput={(e) => updateField(key, (e.target as HTMLInputElement).value)} />
+            {/if}
+          </div>
+          {#if i < Object.entries(schema.properties ?? {}).length - 1}<Separator class="my-1" />{/if}
+        {/each}
+      </div>
+      <div class="flex items-center gap-2 pt-2">
+        <Button type="submit" disabled={saving}>
+          {#if saving}<RefreshCwIcon class="size-4 animate-spin" />{:else}<SaveIcon class="size-4" />{/if}
+          Save Settings
+        </Button>
+        <Button variant="outline" type="button" onclick={loadSettings} disabled={saving}>
+          <RefreshCwIcon class="size-4" /> Refresh
+        </Button>
+      </div>
+    </form>
+  {/if}
 </div>
-
-<script lang="ts" module>
-	function humanizeKey(key: string): string {
-		return key
-			.replace(/_/g, " ")
-			.replace(/\b\w/g, (c) => c.toUpperCase());
-	}
-</script>
