@@ -23,7 +23,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         r#"
         CREATE TABLE IF NOT EXISTS users (
             id           TEXT PRIMARY KEY NOT NULL,
-            email        TEXT NOT NULL UNIQUE,
+            username     TEXT NOT NULL UNIQUE,
             api_key_hash TEXT NOT NULL,
             is_sudoer    INTEGER NOT NULL DEFAULT 0,
             created_at   TEXT NOT NULL DEFAULT (datetime('now')),

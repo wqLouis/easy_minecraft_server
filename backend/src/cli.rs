@@ -8,14 +8,15 @@ use chrono::{TimeZone, Utc};
 use clap::{Parser, Subcommand};
 use sqlx::SqlitePool;
 
-use crate::auth::generate_api_key;
-use crate::blacklist;
+use crate::auth::generate_token;
+use crate::ip_ban;
+
 use crate::models::{IpWhitelistEntry, User};
 use crate::settings;
 
 /// Backend CLI — host-machine administration.
 #[derive(Parser, Debug)]
-#[command(name = "backend", version, about = "Minecraft server backend")]
+#[command(name = "eazymc-backend", version, about = "Minecraft server backend")]
 pub struct Cli {
     /// Log level (trace, debug, info, warn, error)
     #[arg(long, default_value = "info", global = true)]
@@ -35,9 +36,9 @@ pub enum Commands {
     },
     /// Create a new sudo (admin) user directly in the database.
     CreateSudo {
-        /// Email address for the new sudo user
+        /// Username for the new sudo user
         #[arg(short, long)]
-        email: String,
+        username: String,
     },
     /// List all users in the database.
     ListUsers,
@@ -61,9 +62,9 @@ pub enum Commands {
     },
     /// List all active IP whitelist entries.
     WhitelistList,
-    /// Clear IP whitelist entries for a specific user (by ID or email).
+    /// Clear IP whitelist entries for a specific user (by ID or username).
     WhitelistClear {
-        /// User ID or email to clear
+        /// User ID or username to clear
         user: String,
     },
 }
@@ -78,7 +79,7 @@ pub async fn dispatch(cli: Cli, pool: SqlitePool) -> Result<(), Box<dyn std::err
     .init();
 
     let settings_path = settings::default_settings_path();
-    let blacklist_path = blacklist::default_blacklist_path();
+    let blacklist_path = ip_ban::default_blacklist_path();
 
     match cli.command {
         Commands::Serve { daemon } => {
@@ -87,7 +88,7 @@ pub async fn dispatch(cli: Cli, pool: SqlitePool) -> Result<(), Box<dyn std::err
             }
             crate::serve::serve(pool, settings_path, blacklist_path).await
         }
-        Commands::CreateSudo { email } => create_sudo(&pool, &email).await,
+        Commands::CreateSudo { username } => create_sudo(&pool, &username).await,
         Commands::ListUsers => list_users(&pool).await,
         Commands::BanStatus => ban_status(&blacklist_path).await,
         Commands::Unban { ip } => unban(&blacklist_path, &ip).await,
@@ -106,52 +107,50 @@ pub async fn dispatch(cli: Cli, pool: SqlitePool) -> Result<(), Box<dyn std::err
 
 // ── Create sudo ────────────────────────────────────────────────────
 
-async fn create_sudo(pool: &SqlitePool, email: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let email = email.trim().to_lowercase();
-    if email.is_empty() || !email.contains('@') {
-        eprintln!("error: invalid email address");
+async fn create_sudo(pool: &SqlitePool, username: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let username = username.trim().to_lowercase();
+    if username.is_empty() || username.len() < 2 {
+        eprintln!("error: username must be at least 2 characters");
         std::process::exit(1);
     }
 
-    let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE email = ?")
-        .bind(&email)
+    let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE username = ?")
+        .bind(&username)
         .fetch_one(pool)
         .await?;
 
     if existing > 0 {
-        eprintln!("error: email '{}' is already registered", email);
+        eprintln!("error: username '{}' already exists", username);
         std::process::exit(1);
     }
 
     let id = uuid::Uuid::new_v4().to_string();
-    let api_key = generate_api_key();
+    let token = generate_token();
 
+    // Hash token + username together (both needed for auth)
+    let credential_input = format!("{token}{username}");
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let api_key_hash = argon2
-        .hash_password(api_key.as_bytes(), &salt)
+    let credential_hash = argon2
+        .hash_password(credential_input.as_bytes(), &salt)
         .map_err(|e| format!("hashing error: {}", e))?
         .to_string();
 
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     sqlx::query(
-        "INSERT INTO users (id, email, api_key_hash, is_sudoer, created_at, updated_at) \
-         VALUES (?, ?, ?, 1, ?, ?)",
+        "INSERT INTO users (id, username, api_key_hash, is_sudoer, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)",
     )
-    .bind(&id)
-    .bind(&email)
-    .bind(&api_key_hash)
-    .bind(&now)
-    .bind(&now)
+    .bind(&id).bind(&username).bind(&credential_hash).bind(&now).bind(&now)
     .execute(pool)
     .await?;
 
     println!("✅ Sudo user created successfully!");
-    println!("   Email:   {}", email);
-    println!("   API key: {}", api_key);
+    println!("   Username: {}", username);
+    println!("   Token:    {}", token);
     println!();
-    println!("⚠️  Save this API key — it will not be shown again.");
+    println!("🔐 Authenticate with: Authorization: Bearer {}:{}", username, token);
+    println!("⚠️  Save these credentials — the token will not be shown again.");
 
     Ok(())
 }
@@ -168,13 +167,13 @@ async fn list_users(pool: &SqlitePool) -> Result<(), Box<dyn std::error::Error>>
         return Ok(());
     }
 
-    println!("{:<10} {:<30} {:<6} {}", "ID", "Email", "Sudo", "Created");
+    println!("{:<10} {:<30} {:<6} {}", "ID", "Username", "Sudo", "Created");
     println!("{}", "-".repeat(75));
     for user in &users {
         println!(
             "{:<10} {:<30} {:<6} {}",
             &user.id[..8],
-            user.email,
+            user.username,
             if user.is_sudoer { "yes" } else { "no" },
             user.created_at,
         );
@@ -194,7 +193,7 @@ async fn ban_status(blacklist_path: &PathBuf) -> Result<(), Box<dyn std::error::
     );
     println!();
 
-    let ips = blacklist::load_blacklist(blacklist_path)?;
+    let ips = ip_ban::load_blacklist(blacklist_path)?;
     if ips.is_empty() {
         println!("No blacklisted IPs.");
     } else {
@@ -266,9 +265,9 @@ async fn whitelist_list(pool: &SqlitePool) -> Result<(), Box<dyn std::error::Err
 // ── Whitelist clear ──────────────────────────────────────────────
 
 async fn whitelist_clear(pool: &SqlitePool, user: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Try to find user by ID or email
+    // Try to find user by ID or username
     let user_row = sqlx::query_as::<_, User>(
-        "SELECT * FROM users WHERE id = ? OR email = ?",
+        "SELECT * FROM users WHERE id = ? OR username = ?",
     )
     .bind(user)
     .bind(user)
@@ -417,11 +416,11 @@ async fn reset_db(
     println!("✅ Reset settings to defaults.");
 
     // Reset blacklist
-    blacklist::save_blacklist(blacklist_path, &Vec::<String>::new())?;
+    ip_ban::save_blacklist(blacklist_path, &Vec::<String>::new())?;
     println!("✅ Cleared blacklist.");
 
     println!();
-    println!("📋 Database reset complete. Use `backend create-sudo` to create a new admin user.");
+    println!("📋 Database reset complete. Use `eazymc-backend create-sudo --username <name>` to create a new admin user.");
 
     Ok(())
 }
@@ -429,10 +428,10 @@ async fn reset_db(
 // ── Unban ──────────────────────────────────────────────────────────
 
 async fn unban(blacklist_path: &PathBuf, ip: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut ips = blacklist::load_blacklist(blacklist_path)?;
+    let mut ips = ip_ban::load_blacklist(blacklist_path)?;
     let existed = ips.iter().any(|x| x == ip);
     ips.retain(|x| x != ip);
-    blacklist::save_blacklist(blacklist_path, &ips)?;
+    ip_ban::save_blacklist(blacklist_path, &ips)?;
 
     if existed {
         println!("✅ Removed {} from blacklist.", ip);

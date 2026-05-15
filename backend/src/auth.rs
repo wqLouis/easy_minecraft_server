@@ -22,7 +22,6 @@ use crate::ip_ban::IpBanManager;
 use crate::models::*;
 use crate::settings::AppSettings;
 
-/// IP whitelist sliding window TTL (12 hours in seconds).
 const WHITELIST_TTL_SECS: i64 = 12 * 60 * 60;
 use mc_server_manager::registry::ServerRegistry;
 
@@ -40,101 +39,85 @@ pub struct AppState {
     pub server_registry: ServerRegistry,
 }
 
+impl AppState {
+    pub fn get_server(&self, id: &str) -> Result<mc_server_manager::ManagedServer, crate::errors::AppError> {
+        self.server_registry.get_server(id)
+            .map_err(|e| crate::errors::AppError::Internal(format!("Instance '{id}': {e}")))
+    }
+}
+
 // ---------------------------------------------------------------------------
-// API key helpers
+// Credential helpers
 // ---------------------------------------------------------------------------
 
-/// Generate a cryptographically random API key (64 hex chars = 256 bits).
-pub fn generate_api_key() -> String {
+/// Generate a cryptographically random token (64 hex chars = 256 bits).
+pub fn generate_token() -> String {
     let bytes: [u8; 32] = rand::thread_rng().r#gen();
     hex::encode(bytes)
 }
 
-/// Hash an API key with argon2 for secure DB storage.
-fn hash_api_key(api_key: &str) -> Result<String, AppError> {
+/// Hash `token + username` with argon2id (auto-generated salt embedded in output).
+fn hash_credentials(token: &str, username: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let hash = argon2
-        .hash_password(api_key.as_bytes(), &salt)?
-        .to_string();
-    Ok(hash)
+    let input = format!("{token}{username}");
+    Ok(argon2.hash_password(input.as_bytes(), &salt)?.to_string())
 }
 
-/// Verify a raw API key against a stored argon2 hash.
-fn verify_api_key(api_key: &str, hash: &str) -> Result<bool, AppError> {
+/// Verify a raw `token + username` against a stored argon2 hash.
+fn verify_credentials(token: &str, username: &str, hash: &str) -> Result<bool, AppError> {
     let parsed = PasswordHash::new(hash)?;
-    Ok(Argon2::default()
-        .verify_password(api_key.as_bytes(), &parsed)
-        .is_ok())
+    let input = format!("{token}{username}");
+    Ok(Argon2::default().verify_password(input.as_bytes(), &parsed).is_ok())
 }
 
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// POST /api/auth/register
-///
-/// Creates a new regular (non-sudo) user with a generated API key.
-/// Requires sudo privileges (enforced by middleware).
+/// POST /api/auth/register — create a new user.
+/// Returns `{ user: { id, username, is_sudoer, created_at }, api_key }`.
 pub async fn register(
     State(state): State<Arc<AppState>>,
     Extension(_requester): Extension<User>,
     Json(body): Json<RegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let email = body.email.trim().to_lowercase();
-    if email.is_empty() || !email.contains('@') {
-        return Err(AppError::Internal("Invalid email address".to_string()));
+    let username = body.username.trim().to_lowercase();
+    if username.is_empty() || username.len() < 2 {
+        return Err(AppError::Internal("Username must be at least 2 characters".into()));
+    }
+    if !username.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err(AppError::Internal("Username can only contain letters, numbers, hyphens and underscores".into()));
     }
 
-    let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE email = ?")
-        .bind(&email)
-        .fetch_one(&state.db)
-        .await?;
-
+    let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE username = ?")
+        .bind(&username).fetch_one(&state.db).await?;
     if existing > 0 {
-        return Err(AppError::EmailAlreadyExists);
+        return Err(AppError::UsernameAlreadyExists);
     }
 
+    let token = generate_token();
+    let credential_hash = hash_credentials(&token, &username)?;
     let id = Uuid::new_v4().to_string();
-    let api_key = generate_api_key();
-    let api_key_hash = hash_api_key(&api_key)?;
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
     sqlx::query(
-        "INSERT INTO users (id, email, api_key_hash, is_sudoer, created_at, updated_at) \
-         VALUES (?, ?, ?, 0, ?, ?)",
+        "INSERT INTO users (id, username, api_key_hash, is_sudoer, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)",
     )
-    .bind(&id)
-    .bind(&email)
-    .bind(&api_key_hash)
-    .bind(&now)
-    .bind(&now)
-    .execute(&state.db)
-    .await?;
+    .bind(&id).bind(&username).bind(&credential_hash).bind(&now).bind(&now)
+    .execute(&state.db).await?;
 
-    let user = User {
-        id,
-        email,
-        api_key_hash,
-        is_sudoer: false,
-        created_at: now.clone(),
-        updated_at: now,
-    };
+    let user = User { id, username: username.clone(), api_key_hash: credential_hash, is_sudoer: false, created_at: now.clone(), updated_at: now };
 
-    Ok((
-        StatusCode::CREATED,
-        Json(json!(CreatedUserResponse {
-            user: UserResponse::from(user),
-            api_key,
-        })),
-    ))
+    Ok((StatusCode::CREATED, Json(json!(CreatedUserResponse {
+        user: UserResponse::from(user),
+        api_key: token, // the `api_key` field is actually the token
+    }))))
 }
 
 /// GET /api/auth/me
 pub async fn me(Extension(user): Extension<User>) -> impl IntoResponse {
-    Json(MeResponse {
-        user: UserResponse::from(user),
-    })
+    Json(MeResponse { user: UserResponse::from(user) })
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -147,16 +130,11 @@ pub async fn list_users(
     Extension(_user): Extension<User>,
 ) -> Result<Json<Vec<UserResponse>>, AppError> {
     let users = sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY created_at ASC")
-        .fetch_all(&state.db)
-        .await?;
-
-    let response: Vec<UserResponse> = users.into_iter().map(UserResponse::from).collect();
-    Ok(Json(response))
+        .fetch_all(&state.db).await?;
+    Ok(Json(users.into_iter().map(UserResponse::from).collect()))
 }
 
-/// DELETE /api/users/:id — delete a user.
-///
-/// Prevents deleting your own account.
+/// DELETE /api/users/:id — delete a user (cannot delete yourself).
 pub async fn delete_user(
     State(state): State<Arc<AppState>>,
     Extension(requester): Extension<User>,
@@ -165,25 +143,17 @@ pub async fn delete_user(
     if requester.id == id {
         return Err(AppError::Internal("Cannot delete your own account".into()));
     }
-
-    let result = sqlx::query("DELETE FROM users WHERE id = ?")
-        .bind(&id)
-        .execute(&state.db)
-        .await?;
-
+    let result = sqlx::query("DELETE FROM users WHERE id = ?").bind(&id).execute(&state.db).await?;
     if result.rows_affected() == 0 {
         return Err(AppError::Internal(format!("User '{id}' not found")));
     }
-
     Ok((StatusCode::OK, Json(json!({ "deleted": true, "id": id }))))
 }
 
-/// PUT /api/users/:id — update a user's email.
-///
-/// Sudo privileges cannot be changed via API (use `backend create-sudo` CLI).
+/// PUT /api/users/:id — update a user's username.
 #[derive(serde::Deserialize)]
 pub struct UpdateUserRequest {
-    pub email: Option<String>,
+    pub username: Option<String>,
 }
 
 pub async fn update_user(
@@ -193,90 +163,78 @@ pub async fn update_user(
     Json(body): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>, AppError> {
     let existing = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ?")
-        .bind(&id)
-        .fetch_optional(&state.db)
-        .await?
+        .bind(&id).fetch_optional(&state.db).await?
         .ok_or_else(|| AppError::Internal(format!("User '{id}' not found")))?;
 
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let new_email = body.email.unwrap_or_else(|| existing.email.clone());
+    let new_username = body.username.unwrap_or_else(|| existing.username.clone());
 
-    sqlx::query("UPDATE users SET email = ?, updated_at = ? WHERE id = ?")
-        .bind(&new_email)
-        .bind(&now)
-        .bind(&id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query("UPDATE users SET username = ?, updated_at = ? WHERE id = ?")
+        .bind(&new_username).bind(&now).bind(&id)
+        .execute(&state.db).await?;
 
-    let updated = User {
-        email: new_email,
-        updated_at: now,
-        ..existing
-    };
-
+    let updated = User { username: new_username, updated_at: now, ..existing };
     Ok(Json(UserResponse::from(updated)))
 }
 
 // ---------------------------------------------------------------------------
-// Bearer token extraction
+// Credential extraction from Authorization header
 // ---------------------------------------------------------------------------
 
-pub fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Result<String, AppError> {
-    let auth_header = headers
-        .get("Authorization")
+/// Extract `(username, token)` from `Authorization: Bearer <username>:<token>`.
+pub fn extract_credentials(headers: &axum::http::HeaderMap) -> Result<(String, String), AppError> {
+    let auth = headers.get("Authorization")
         .ok_or(AppError::MissingAuthHeader)?
-        .to_str()
-        .map_err(|_| AppError::InvalidAuthHeader)?;
+        .to_str().map_err(|_| AppError::InvalidAuthHeader)?;
 
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or(AppError::InvalidAuthHeader)?
-        .trim();
+    let payload = auth.strip_prefix("Bearer ")
+        .ok_or(AppError::InvalidAuthHeader)?.trim();
 
-    if token.is_empty() {
+    let (username, token) = payload.split_once(':')
+        .ok_or(AppError::InvalidAuthHeader)?;
+
+    let username = username.trim();
+    let token = token.trim();
+    if username.is_empty() || token.is_empty() {
         return Err(AppError::InvalidAuthHeader);
     }
 
-    Ok(token.to_string())
+    Ok((username.to_string(), token.to_string()))
 }
 
 // ---------------------------------------------------------------------------
-// User resolution from API key
+// User resolution from credentials
 // ---------------------------------------------------------------------------
 
-/// Look up a user by their raw API key (bearer token).
-/// Iterates all users and tries argon2 verification on each.
-pub async fn resolve_user_from_api_key(
+/// Look up a user by `username` and verify `token` against stored hash.
+pub async fn resolve_user(
     db: &SqlitePool,
-    api_key: &str,
+    username: &str,
+    token: &str,
 ) -> Result<User, AppError> {
-    let users = sqlx::query_as::<_, User>("SELECT * FROM users")
-        .fetch_all(db)
-        .await?;
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE username = ?")
+        .bind(username)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::ApiKeyNotFound)?;
 
-    for user in users {
-        if verify_api_key(api_key, &user.api_key_hash)? {
-            return Ok(user);
-        }
+    if verify_credentials(token, username, &user.api_key_hash)? {
+        Ok(user)
+    } else {
+        Err(AppError::ApiKeyNotFound)
     }
-
-    Err(AppError::ApiKeyNotFound)
 }
 
 // ---------------------------------------------------------------------------
 // Client IP extraction
 // ---------------------------------------------------------------------------
 
-/// Extract client IP from request — checks X-Forwarded-For header first,
-/// then falls back to the SocketAddr from extensions.
 pub fn client_ip(req: &axum::http::Request<axum::body::Body>) -> Option<String> {
     if let Some(val) = req.headers().get("x-forwarded-for") {
         if let Ok(s) = val.to_str() {
             if let Some(ip) = s.split(',').next() {
                 let ip = ip.trim().to_string();
-                if !ip.is_empty() {
-                    return Some(ip);
-                }
+                if !ip.is_empty() { return Some(ip); }
             }
         }
     }
@@ -290,88 +248,39 @@ pub fn client_ip(req: &axum::http::Request<axum::body::Body>) -> Option<String> 
 // IP whitelist enforcement (sliding 12h window)
 // ---------------------------------------------------------------------------
 
-/// Check and enforce the IP whitelist after successful authentication.
-///
-/// Rules (only applies when `ip_whitelist_enabled` is true):
-/// 1. If `user_id + ip` has an active entry → refresh `updated_at`, allow.
-/// 2. If user has NO active entries at all → auto-register `user_id + ip`, allow.
-/// 3. If user has an active entry for a *different* IP → reject.
-///
-/// Expired entries (older than WHITELIST_TTL_SECS since `updated_at`)
-/// are cleaned up before checking.
 pub async fn check_ip_whitelist(
-    db: &SqlitePool,
-    user_id: &str,
-    ip: &str,
-    enabled: bool,
+    db: &SqlitePool, user_id: &str, ip: &str, enabled: bool,
 ) -> Result<(), AppError> {
-    if !enabled {
-        return Ok(());
-    }
+    if !enabled { return Ok(()); }
 
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-
-    // ── 1. Clean expired entries for this user ────────────────
-    let cutoff = chrono::Utc::now() - chrono::Duration::seconds(WHITELIST_TTL_SECS);
-    let cutoff_str = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+    let cutoff = (chrono::Utc::now() - chrono::Duration::seconds(WHITELIST_TTL_SECS))
+        .format("%Y-%m-%d %H:%M:%S").to_string();
 
     sqlx::query("DELETE FROM ip_whitelist WHERE user_id = ? AND updated_at < ?")
-        .bind(user_id)
-        .bind(&cutoff_str)
-        .execute(db)
-        .await?;
+        .bind(user_id).bind(&cutoff).execute(db).await?;
 
-    // ── 2. Check for existing active entry ────────────────────
     let existing = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM ip_whitelist WHERE user_id = ? AND ip = ? AND updated_at >= ?",
-    )
-    .bind(user_id)
-    .bind(ip)
-    .bind(&cutoff_str)
-    .fetch_one(db)
-    .await?;
+    ).bind(user_id).bind(ip).bind(&cutoff).fetch_one(db).await?;
 
     if existing > 0 {
-        // Slide the expiry window
         sqlx::query("UPDATE ip_whitelist SET updated_at = ? WHERE user_id = ? AND ip = ?")
-            .bind(&now)
-            .bind(user_id)
-            .bind(ip)
-            .execute(db)
-            .await?;
+            .bind(&now).bind(user_id).bind(ip).execute(db).await?;
         return Ok(());
     }
 
-    // ── 3. Does this user have ANY active entry? ──────────────
     let any_active = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM ip_whitelist WHERE user_id = ? AND updated_at >= ?",
-    )
-    .bind(user_id)
-    .bind(&cutoff_str)
-    .fetch_one(db)
-    .await?;
+    ).bind(user_id).bind(&cutoff).fetch_one(db).await?;
 
     if any_active == 0 {
-        // First-time or all expired → auto-register this IP
         let id = uuid::Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO ip_whitelist (id, user_id, ip, updated_at) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(user_id)
-        .bind(ip)
-        .bind(&now)
-        .execute(db)
-        .await?;
-
-        log::info!(
-            "IP {} auto-registered in whitelist for user {}",
-            ip,
-            &user_id[..8]
-        );
+        sqlx::query("INSERT INTO ip_whitelist (id, user_id, ip, updated_at) VALUES (?, ?, ?, ?)")
+            .bind(&id).bind(user_id).bind(ip).bind(&now).execute(db).await?;
+        log::info!("IP {ip} auto-registered in whitelist for user {}", &user_id[..8]);
         return Ok(());
     }
 
-    // ── 4. Active entry exists for a different IP → reject ────
     Err(AppError::IpNotWhitelisted)
 }

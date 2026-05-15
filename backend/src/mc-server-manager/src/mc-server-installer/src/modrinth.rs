@@ -64,9 +64,12 @@ struct SearchHit {
     description: String,
     project_type: String,
     downloads: u64,
-    loaders: Vec<String>,
-    game_versions: Vec<String>,
+    /// Modrinth API v2 uses `categories` (e.g. ["paper", "bukkit", "economy"])
+    categories: Vec<String>,
+    /// Game/MC versions this project supports
     versions: Vec<String>,
+    /// Latest version ID
+    latest_version: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -139,10 +142,10 @@ pub async fn search(
                 description: h.description,
                 project_type: h.project_type,
                 downloads: h.downloads,
-                loaders: h.loaders,
-                game_versions: h.game_versions,
+                loaders: h.categories.clone(),
+                game_versions: h.versions.clone(),
                 page_url: format!("https://modrinth.com/{}/{}", project_type, slug),
-                latest_version_id: h.versions.first().cloned(),
+                latest_version_id: h.latest_version.clone(),
             }
         })
         .collect())

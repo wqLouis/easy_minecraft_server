@@ -12,7 +12,7 @@ Endpoints marked **Sudo** additionally require a sudo user.
 | `/api/auth/register` | `POST` | Sudo | Create a new *non-sudo* user; returns API key once |
 | `/api/users` | `GET` | Sudo | List all users |
 | `/api/users/{id}` | `DELETE` | Sudo | Delete a user (cannot delete yourself) |
-| `/api/users/{id}` | `PUT` | Sudo | Update a user's email |
+| `/api/users/{id}` | `PUT` | Sudo | Update a user's username |
 | `/api/settings` | `GET` | Sudo | Returns backend settings |
 | `/api/settings` | `PUT` | Sudo | Updates backend settings |
 | `/api/settings/schema` | `GET` | Sudo | Returns JSON Schema for settings |

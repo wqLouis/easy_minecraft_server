@@ -12,8 +12,8 @@
 
   let users = $state<UserProfile[]>([]);
   let loading = $state(true), error = $state("");
-  let showCreate = $state(false), newEmail = $state(""), creating = $state(false), createdKey = $state("");
-  let editingId = $state<string | null>(null), editEmail = $state("");
+  let showCreate = $state(false), newUsername = $state(""), creating = $state(false), createdKey = $state("");
+  let editingId = $state<string | null>(null), editUsername = $state("");
 
   onMount(() => {
     if (!isAuthenticated()) { toast.error("Auth required"); return }
@@ -28,10 +28,10 @@
   }
 
   async function create() {
-    if (!newEmail.trim()) return;
+    if (!newUsername.trim()) return;
     creating = true; createdKey = "";
     try {
-      const res = await getApi().post<{ api_key: string; user: UserProfile }>("/api/auth/register", { email: newEmail.trim() });
+      const res = await getApi().post<{ api_key: string; user: UserProfile }>("/api/auth/register", { username: newUsername.trim() });
       createdKey = res.api_key;
       users = await getApi().get<UserProfile[]>("/api/users");
       toast.success("User created");
@@ -39,20 +39,20 @@
     finally { creating = false }
   }
 
-  function resetCreate() { showCreate = false; newEmail = ""; createdKey = "" }
+  function resetCreate() { showCreate = false; newUsername = ""; createdKey = "" }
 
   async function del(id: string) {
     const u = users.find((u) => u.id === id);
-    if (!u || !confirm(`Delete "${u.email}"?`)) return;
+    if (!u || !confirm(`Delete "${u.username}"?`)) return;
     try { await getApi().del(`/api/users/${id}`); users = users.filter((u) => u.id !== id); toast.success("User deleted") }
     catch (e: unknown) { toast.error("Failed", { description: e instanceof Error ? e.message : "" }) }
   }
 
-  function startEdit(u: UserProfile) { editingId = u.id; editEmail = u.email }
+  function startEdit(u: UserProfile) { editingId = u.id; editUsername = u.username }
   function cancelEdit() { editingId = null }
   async function saveEdit(id: string) {
-    if (!editEmail.trim()) return;
-    try { await getApi().put(`/api/users/${id}`, { email: editEmail.trim() }); users = users.map((u) => u.id === id ? { ...u, email: editEmail.trim() } : u); editingId = null; toast.success("Updated") }
+    if (!editUsername.trim()) return;
+    try { await getApi().put(`/api/users/${id}`, { username: editUsername.trim() }); users = users.map((u) => u.id === id ? { ...u, username: editUsername.trim() } : u); editingId = null; toast.success("Updated") }
     catch (e: unknown) { toast.error("Failed", { description: e instanceof Error ? e.message : "" }) }
   }
 </script>
@@ -64,9 +64,7 @@
       <p class="text-sm text-muted-foreground">Manage registered users.</p>
     </div>
     <div class="flex items-center gap-2">
-      <Button variant="outline" size="sm" onclick={loadUsers} disabled={loading}>
-        <RefreshCwIcon class={loading ? "size-4 animate-spin" : "size-4"} /> Refresh
-      </Button>
+      <Button variant="outline" size="sm" onclick={loadUsers} disabled={loading}><RefreshCwIcon class={loading ? "size-4 animate-spin" : "size-4"} /> Refresh</Button>
       <Button size="sm" onclick={() => { resetCreate(); showCreate = true }}><PlusIcon class="size-4" /> New User</Button>
     </div>
   </div>
@@ -81,7 +79,7 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="border-b text-left text-xs text-muted-foreground">
-              <th class="px-4 py-3 font-medium">Email</th><th class="px-4 py-3 font-medium">Role</th><th class="px-4 py-3 font-medium">Created</th><th class="px-4 py-3 font-medium text-right">Actions</th>
+              <th class="px-4 py-3 font-medium">Username</th><th class="px-4 py-3 font-medium">Role</th><th class="px-4 py-3 font-medium">Created</th><th class="px-4 py-3 font-medium text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -90,11 +88,11 @@
                 <td class="px-4 py-3">
                   {#if editingId === user.id}
                     <div class="flex items-center gap-1">
-                      <Input bind:value={editEmail} class="h-7 text-xs" />
+                      <Input bind:value={editUsername} class="h-7 text-xs" />
                       <Button size="icon-xs" variant="ghost" onclick={() => saveEdit(user.id)}><CheckIcon class="size-3" /></Button>
                       <Button size="icon-xs" variant="ghost" onclick={cancelEdit}><XIcon class="size-3" /></Button>
                     </div>
-                  {:else}<span class="font-medium">{user.email}</span>{/if}
+                  {:else}<span class="font-medium">{user.username}</span>{/if}
                 </td>
                 <td class="px-4 py-3"><Badge variant={user.is_sudoer ? "default" : "secondary"}>{user.is_sudoer ? "Sudo" : "User"}</Badge></td>
                 <td class="px-4 py-3 text-muted-foreground">{user.created_at}</td>
@@ -117,22 +115,23 @@
   <Dialog.Content>
     <Dialog.Header>
       <Dialog.Title>Create New User</Dialog.Title>
-      <Dialog.Description>Enter email. API key shown once.</Dialog.Description>
+      <Dialog.Description>Enter a username. API key shown once.</Dialog.Description>
     </Dialog.Header>
     {#if createdKey}
       <div class="rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
         <div class="mb-1 flex items-center gap-2 font-medium"><KeyIcon class="size-4" /> API Key</div>
         <p class="mb-2 text-xs">Save this key — it will not be shown again.</p>
-        <code class="block break-all rounded bg-amber-100 p-2 font-mono text-xs dark:bg-amber-900">{createdKey}</code>
+        <code class="block break-all rounded bg-amber-100 p-2 font-mono text-xs dark:bg-amber-900">{newUsername.trim()}:{createdKey}</code>
+        <p class="mt-2 text-xs">Use this as <code class="rounded bg-amber-100 px-1 dark:bg-amber-900">Authorization: Bearer {newUsername.trim()}:{createdKey}</code></p>
       </div>
       <Dialog.Footer><Button onclick={resetCreate}>Close</Button></Dialog.Footer>
     {:else}
       <div class="grid gap-4">
-        <div class="grid gap-2"><label for="new-email" class="text-sm font-medium">Email</label><Input id="new-email" type="email" placeholder="user@example.com" bind:value={newEmail} disabled={creating} /></div>
+        <div class="grid gap-2"><label for="new-username" class="text-sm font-medium">Username</label><Input id="new-username" placeholder="myuser" bind:value={newUsername} disabled={creating} /></div>
       </div>
       <Dialog.Footer>
         <Button variant="outline" onclick={resetCreate} disabled={creating}>Cancel</Button>
-        <Button onclick={create} disabled={!newEmail.trim() || creating}>{creating ? "Creating…" : "Create User"}</Button>
+        <Button onclick={create} disabled={!newUsername.trim() || creating}>{creating ? "Creating…" : "Create User"}</Button>
       </Dialog.Footer>
     {/if}
   </Dialog.Content>

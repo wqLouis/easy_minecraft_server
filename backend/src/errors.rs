@@ -11,8 +11,8 @@ pub enum AppError {
     #[error("Crypto error: {0}")]
     CryptoHash(String),
 
-    #[error("Email already registered")]
-    EmailAlreadyExists,
+    #[error("Username already exists")]
+    UsernameAlreadyExists,
 
     #[error("API key not found or invalid")]
     ApiKeyNotFound,
@@ -45,10 +45,16 @@ impl From<argon2::password_hash::Error> for AppError {
     }
 }
 
+impl From<std::io::Error> for AppError {
+    fn from(err: std::io::Error) -> Self {
+        AppError::Internal(format!("IO error: {}", err))
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            AppError::EmailAlreadyExists => (StatusCode::CONFLICT, "Email already registered"),
+            AppError::UsernameAlreadyExists => (StatusCode::CONFLICT, "Username already exists"),
             AppError::ApiKeyNotFound => (StatusCode::UNAUTHORIZED, "API key not found or invalid"),
             AppError::MissingAuthHeader => {
                 (StatusCode::UNAUTHORIZED, "Missing Authorization header")

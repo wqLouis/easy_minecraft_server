@@ -23,10 +23,10 @@ backend/
 cargo build
 
 # Create the first admin user
-./target/debug/backend create-sudo --email admin@example.com
+./target/debug/eazymc-backend create-sudo --username admin
 
 # Start the API server
-RUST_LOG=info ./target/debug/backend serve
+RUST_LOG=info ./target/debug/eazymc-backend serve
 ```
 
 See [`backend/docs/api.md`](backend/docs/api.md) for the full API reference.

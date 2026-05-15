@@ -73,6 +73,7 @@ pub mod player;
 pub mod properties;
 pub mod registry;
 pub mod version;
+pub mod world;
 
 // ---------------------------------------------------------------------------
 // Re-exports
@@ -81,8 +82,9 @@ pub mod version;
 pub use error::Error;
 pub use instance::{ServerConfig, ServerInstance};
 pub use log::LogManager;
-pub use manager::{ManagedServer, ServerHandle, ServerStatus};
+pub use manager::{ManagedServer, ServerHandle, ServerStatus, ModInfo, ModpackInfo};
 pub use player::{PlayerInfo, PlayerTracker};
 pub use properties::ServerProperties;
-pub use registry::{InstanceConfig, InstanceSummary, ServerRegistry};
+pub use registry::{instance_config_schema, InstanceConfig, InstanceSummary, ServerRegistry, ArchivedSummary};
 pub use version::{fetch_latest, fetch_versions, list_providers, parse_provider, ProviderInfo};
+pub use world::{WorldInfo, BackupEntry, HistoryEntry, is_minecraft_world, human_size};

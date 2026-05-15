@@ -29,7 +29,7 @@ export interface CreateServerRequest {
 
 export interface UserProfile {
   id: string;
-  email: string;
+  username: string;
   is_sudoer: boolean;
   created_at: string;
 }

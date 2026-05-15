@@ -1,7 +1,5 @@
 mod auth;
-mod blacklist;
 mod cli;
-mod config;
 mod db;
 mod errors;
 mod ip_ban;
@@ -13,13 +11,24 @@ mod settings;
 use clap::Parser;
 
 use crate::cli::Cli;
-use crate::config::AppConfig;
+
+#[derive(Debug, Clone)]
+struct AppConfig {
+    database_url: String,
+}
+
+impl AppConfig {
+    fn from_env() -> Self {
+        let database_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "sqlite:./data/app.db?mode=rwc".to_string());
+        Self { database_url }
+    }
+}
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    // Always init DB config (needed by both CLI commands and server)
     dotenvy::dotenv().ok();
     let config = AppConfig::from_env();
 

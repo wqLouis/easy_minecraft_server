@@ -4,7 +4,8 @@
 //! player tracking, and server.properties management — all exposed through
 //! a thread-safe [`ServerHandle`].
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use crate::version::parse_provider;
 use crate::log::LogManager;
 use crate::player::PlayerTracker;
 use crate::properties::ServerProperties;
+use crate::world::{self as world_mod, WorldInfo, BackupEntry, HistoryEntry};
 
 // ---------------------------------------------------------------------------
 // Server status
@@ -110,6 +112,38 @@ impl ServerHandle {
             .read()
             .map_err(|_| Error::other("properties lock poisoned"))?;
         p.save()
+    }
+
+    /// Return all properties as a HashMap.
+    pub fn all_properties(&self) -> HashMap<String, String> {
+        self.properties
+            .read()
+            .map(|p| p.all().clone())
+            .unwrap_or_default()
+    }
+
+    /// Return the path to the server.properties file.
+    pub fn properties_path(&self) -> PathBuf {
+        self.properties
+            .read()
+            .map(|p| p.path().to_path_buf())
+            .unwrap_or_default()
+    }
+
+    /// Update properties from a map of changes (partial merge), persist to disk.
+    /// Returns `true` if the server is running (requiring a restart for changes to apply).
+    pub fn update_properties(&self, changes: HashMap<String, String>) -> Result<bool, Error> {
+        {
+            let mut p = self
+                .properties
+                .write()
+                .map_err(|_| Error::other("properties lock poisoned"))?;
+            for (key, value) in &changes {
+                p.set(key.clone(), value.clone());
+            }
+            p.save()?;
+        }
+        Ok(self.is_running())
     }
 
     /// Take a snapshot of the current server status.
@@ -423,8 +457,8 @@ impl ManagedServer {
     /// Send a command to the server console.
     ///
     /// Examples: `"say Hello"`, `"stop"`, `"list"`, `"op Steve"`.
-    pub fn send_command(&self, cmd: &str) -> Result<(), Error> {
-        let proc = self.process.blocking_lock();
+    pub async fn send_command(&self, cmd: &str) -> Result<(), Error> {
+        let proc = self.process.lock().await;
         if let Some(ref instance) = *proc {
             instance.send_command(cmd)
         } else {
@@ -451,4 +485,423 @@ impl ManagedServer {
     pub fn version(&self) -> &str {
         &self.version
     }
+
+    // ── Server directory ───────────────────────────────────────────
+
+    /// Path to the server's working directory.
+    pub fn server_dir(&self) -> &Path {
+        &self.config.server_dir
+    }
+
+    // ── World management ───────────────────────────────────────────
+
+    /// List all Minecraft worlds in the server directory.
+    pub fn list_worlds(&self) -> Result<Vec<WorldInfo>, Error> {
+        world_mod::scan_worlds(&self.config.server_dir)
+    }
+
+    /// Create a backup ZIP for the given worlds.
+    pub fn backup_worlds(
+        &self,
+        world_names: &[String],
+        backup_path: &Path,
+    ) -> Result<(), Error> {
+        let server_dir = &self.config.server_dir;
+        let world_paths: Vec<PathBuf> = world_names
+            .iter()
+            .map(|name| server_dir.join(name))
+            .collect();
+        let worlds: Vec<(&str, &Path)> = world_names
+            .iter()
+            .zip(world_paths.iter())
+            .map(|(name, path)| (name.as_str(), path.as_path()))
+            .collect();
+
+        let zip_data = world_mod::create_worlds_zip(&worlds)?;
+
+        if let Some(parent) = backup_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::other(format!("Failed to create backup dir: {e}")))?;
+        }
+
+        std::fs::write(backup_path, &zip_data)
+            .map_err(|e| Error::other(format!("Failed to write backup file: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Extract a world ZIP into the server directory.
+    /// Returns the name of the extracted world.
+    pub fn extract_world_zip(&self, data: &[u8]) -> Result<String, Error> {
+        world_mod::extract_world_zip(data, &self.config.server_dir)
+    }
+
+    /// Delete a world directory (server must be stopped).
+    pub fn delete_world_dir(&self, name: &str) -> Result<(), Error> {
+        let world_path = self.config.server_dir.join(name);
+        if !world_path.is_dir() {
+            return Err(Error::other(format!("World '{}' not found", name)));
+        }
+        if !world_mod::is_minecraft_world(&world_path) {
+            return Err(Error::other(format!(
+                "'{}' is not a valid Minecraft world",
+                name
+            )));
+        }
+        std::fs::remove_dir_all(&world_path)
+            .map_err(|e| Error::other(format!("Failed to delete world: {e}")))?;
+        log::info!("World '{}' deleted", name);
+        Ok(())
+    }
+
+    /// Get the backups directory for this instance.
+    pub fn backups_dir(&self) -> PathBuf {
+        let p = PathBuf::from("./data/backups").join(&self.handle.id);
+        let _ = std::fs::create_dir_all(&p);
+        p
+    }
+
+    /// List all backup files for this instance.
+    pub fn list_backups(&self) -> Result<Vec<BackupEntry>, Error> {
+        let backup_dir = self.backups_dir();
+        let mut backups = Vec::new();
+
+        if backup_dir.is_dir() {
+            let mut entries = std::fs::read_dir(&backup_dir)
+                .map_err(|e| Error::other(format!("Failed to read backups dir: {e}")))?;
+            while let Some(entry) = entries.next().transpose()? {
+                let path = entry.path();
+                if path.extension().map_or(false, |e| e == "zip") {
+                    let filename = entry.file_name().to_string_lossy().to_string();
+                    let metadata = entry.metadata().ok();
+                    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                    let modified = metadata
+                        .and_then(|m| m.modified().ok())
+                        .map(|t| {
+                            let dt: chrono::DateTime<chrono::Utc> = t.into();
+                            dt.to_rfc3339()
+                        })
+                        .unwrap_or_default();
+
+                    backups.push(BackupEntry {
+                        filename,
+                        path: path.to_string_lossy().to_string(),
+                        size_bytes: size,
+                        size_human: world_mod::human_size(size),
+                        created_at: modified,
+                        worlds_included: vec![],
+                    });
+                }
+            }
+        }
+
+        // Sort newest first
+        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(backups)
+    }
+
+    // ── Command history ────────────────────────────────────────────
+
+    fn command_history_path(&self) -> PathBuf {
+        PathBuf::from(format!("./data/command_history/{}.json", self.handle.id))
+    }
+
+    /// Load command history from disk.
+    pub fn command_history(&self) -> Vec<HistoryEntry> {
+        let path = self.command_history_path();
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Record a command in the history (persisted to disk).
+    pub fn record_command(&self, command: &str) {
+        let mut history = self.command_history();
+        let entry = HistoryEntry {
+            command: command.to_string(),
+            sent_at: chrono::Utc::now().to_rfc3339(),
+        };
+        history.push(entry);
+        // Keep last 500 commands
+        if history.len() > 500 {
+            history = history.split_off(history.len() - 500);
+        }
+        let path = self.command_history_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(content) = serde_json::to_string_pretty(&history) {
+            let _ = std::fs::write(&path, content);
+        }
+    }
+
+    // ── Mod / Plugin management ────────────────────────────────────
+
+    /// Return the appropriate mods/plugins directory based on provider type.
+    /// - Fabric/Forge/NeoForge → `mods/`
+    /// - Everything else → `plugins/`
+    pub fn mods_dir(&self) -> PathBuf {
+        let dir_name = match self.provider.to_lowercase().as_str() {
+            "fabric" | "forge" | "neoforge" => "mods",
+            _ => "plugins",
+        };
+        self.config.server_dir.join(dir_name)
+    }
+
+    /// Return the type string: `"mod"` or `"plugin"`.
+    pub fn mod_type(&self) -> &str {
+        match self.provider.to_lowercase().as_str() {
+            "fabric" | "forge" | "neoforge" => "mod",
+            _ => "plugin",
+        }
+    }
+
+    /// List all installed mods/plugins.
+    pub fn list_mods(&self) -> Result<Vec<ModInfo>, Error> {
+        let dir = self.mods_dir();
+        if !dir.is_dir() { return Ok(Vec::new()); }
+
+        let mut items: Vec<ModInfo> = std::fs::read_dir(&dir)
+            .map_err(|e| Error::other(format!("Failed to read {}: {e}", dir.display())))?
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let fname = e.file_name();
+                let n = fname.to_string_lossy();
+                (n.ends_with(".jar") || n.ends_with(".jar.disabled")) && e.path().is_file()
+            })
+            .map(|e| {
+                let filename = e.file_name().to_string_lossy().to_string();
+                let enabled = !filename.ends_with(".disabled");
+                let name = filename.strip_suffix(".jar").or_else(|| filename.strip_suffix(".jar.disabled")).unwrap_or(&filename).to_string();
+                let meta = e.metadata().ok();
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                let modified = meta.and_then(|m| m.modified().ok()).map(|t| { let dt: chrono::DateTime<chrono::Utc> = t.into(); dt.to_rfc3339() }).unwrap_or_default();
+                ModInfo { filename, name, enabled, size_bytes: size, size_human: world_mod::human_size(size), last_modified: modified }
+            })
+            .collect();
+
+        items.sort_by(|a, b| a.filename.cmp(&b.filename));
+        Ok(items)
+    }
+
+    /// Install a mod/plugin by downloading from a URL.
+    pub async fn install_mod(
+        &self,
+        download_url: &str,
+        filename: &str,
+    ) -> Result<ModInfo, Error> {
+        let dir = self.mods_dir();
+        tokio::fs::create_dir_all(&dir).await
+            .map_err(|e| Error::other(format!("Failed to create {}: {e}", dir.display())))?;
+
+        let dest = dir.join(filename);
+
+        mc_server_installer::download(download_url, &dest).await?;
+
+        let metadata = tokio::fs::metadata(&dest).await
+            .map_err(|e| Error::other(format!("Failed to read file metadata: {e}")))?;
+        let size_bytes = metadata.len();
+        let last_modified = metadata.modified().ok()
+            .map(|t| {
+                let dt: chrono::DateTime<chrono::Utc> = t.into();
+                dt.to_rfc3339()
+            })
+            .unwrap_or_default();
+
+        let name = filename.strip_suffix(".jar").unwrap_or(filename).to_string();
+
+        Ok(ModInfo {
+            filename: filename.to_string(),
+            name,
+            enabled: true,
+            size_bytes,
+            size_human: world_mod::human_size(size_bytes),
+            last_modified,
+        })
+    }
+
+    /// Delete a mod/plugin file. Server must be stopped.
+    pub fn delete_mod(&self, filename: &str) -> Result<(), Error> {
+        let dir = self.mods_dir();
+        let path = dir.join(filename);
+        if !path.exists() {
+            // Also try with .disabled extension
+            let disabled_path = dir.join(format!("{filename}.disabled"));
+            if disabled_path.exists() {
+                std::fs::remove_file(&disabled_path)
+                    .map_err(|e| Error::other(format!("Failed to delete {filename}: {e}")))?;
+                return Ok(());
+            }
+            return Err(Error::other(format!("Mod/plugin '{filename}' not found")));
+        }
+        std::fs::remove_file(&path)
+            .map_err(|e| Error::other(format!("Failed to delete {filename}: {e}")))?;
+        Ok(())
+    }
+
+    /// Enable or disable a mod/plugin by renaming `.jar` ↔ `.jar.disabled`.
+    pub fn toggle_mod(&self, filename: &str, enabled: bool) -> Result<ModInfo, Error> {
+        let dir = self.mods_dir();
+
+        let (src_name, dst_name) = if enabled {
+            // Enable: foo.jar.disabled → foo.jar
+            let disabled = format!("{filename}.disabled");
+            if !dir.join(&disabled).exists() {
+                return Err(Error::other(format!(
+                    "Disabled file '{disabled}' not found"
+                )));
+            }
+            (disabled, filename.to_string())
+        } else {
+            // Disable: foo.jar → foo.jar.disabled
+            if !dir.join(filename).exists() {
+                return Err(Error::other(format!(
+                    "File '{filename}' not found"
+                )));
+            }
+            (filename.to_string(), format!("{filename}.disabled"))
+        };
+
+        let src = dir.join(&src_name);
+        let dst = dir.join(&dst_name);
+
+        std::fs::rename(&src, &dst)
+            .map_err(|e| Error::other(format!("Failed to toggle {filename}: {e}")))?;
+        let meta = std::fs::metadata(&dst).map_err(|e| Error::other(e.to_string()))?;
+        let name = filename.strip_suffix(".jar").unwrap_or(filename).to_string();
+        Ok(ModInfo {
+            filename: dst_name, name, enabled,
+            size_bytes: meta.len(),
+            size_human: world_mod::human_size(meta.len()),
+            last_modified: meta.modified().ok().map(|t| { let dt: chrono::DateTime<chrono::Utc> = t.into(); dt.to_rfc3339() }).unwrap_or_default(),
+        })
+    }
+
+    /// Path where generated modpacks are stored.
+    pub fn modpack_dir(&self) -> PathBuf {
+        PathBuf::from("./data/modpacks").join(&self.handle.id)
+    }
+
+    /// Get the path to the most recent generated modpack file, if any.
+    pub fn modpack_path(&self) -> Option<PathBuf> {
+        let dir = self.modpack_dir();
+        if !dir.is_dir() { return None; }
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).ok()?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "mrpack"))
+            .map(|e| e.path())
+            .collect();
+        files.sort_by(|a, b| {
+            b.metadata().and_then(|m| m.modified()).ok()
+                .cmp(&a.metadata().and_then(|m| m.modified()).ok())
+        });
+        files.into_iter().next()
+    }
+
+    /// Generate a Modrinth modpack (.mrpack) from the installed mods/plugins.
+    pub fn generate_modpack(
+        &self,
+        name: &str,
+        version: &str,
+        include: &[String],
+    ) -> Result<ModpackInfo, Error> {
+        use std::io::Write;
+
+        let mods = self.list_mods()?;
+        let dir = self.mods_dir();
+        let selected: Vec<&ModInfo> = if include.is_empty() {
+            mods.iter().filter(|m| m.enabled).collect()
+        } else {
+            mods.iter().filter(|m| include.contains(&m.filename)).collect()
+        };
+        if selected.is_empty() {
+            return Err(Error::other("No mods/plugins selected for modpack"));
+        }
+
+        let mod_type = self.mod_type();
+        let files_json: Vec<serde_json::Value> = selected.iter().map(|m| serde_json::json!({
+            "path": format!("overrides/{}/{}", mod_type, m.filename),
+            "fileSize": m.size_bytes,
+            "env": { "server": "required", "client": "unsupported" },
+            "downloads": serde_json::Value::Array(vec![]),
+        })).collect();
+
+        let index_json = serde_json::json!({
+            "formatVersion": 1, "game": "minecraft", "versionId": version,
+            "name": name, "summary": format!("Server modpack from {} {}", self.provider, self.version),
+            "files": files_json,
+            "dependencies": { "minecraft": self.version }
+        });
+
+        let out_dir = self.modpack_dir();
+        std::fs::create_dir_all(&out_dir)
+            .map_err(|e| Error::other(format!("Failed to create modpack dir: {e}")))?;
+        let safe_name = name.replace(' ', "-").to_lowercase();
+        let out_path = out_dir.join(format!("{}-{}-{}.mrpack", self.handle.id, safe_name, version));
+
+        let file = std::fs::File::create(&out_path)
+            .map_err(|e| Error::other(format!("Failed to create modpack: {e}")))?;
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated).unix_permissions(0o644);
+
+        // Write modrinth.index.json
+        zip.start_file("modrinth.index.json", opts)
+            .map_err(|e| Error::other(format!("Failed to write index: {e}")))?;
+        let index_str = serde_json::to_string_pretty(&index_json)
+            .map_err(|e| Error::other(format!("Failed to serialize index: {e}")))?;
+        zip.write_all(index_str.as_bytes())
+            .map_err(|e| Error::other(format!("Failed to write index: {e}")))?;
+
+        // Add overrides directory and jar files
+        zip.add_directory(format!("overrides/{mod_type}"), opts)
+            .map_err(|e| Error::other(format!("Failed to add dir: {e}")))?;
+        for m in &selected {
+            let jar_path = dir.join(&m.filename);
+            if !jar_path.is_file() { continue; }
+            let data = std::fs::read(&jar_path)
+                .map_err(|e| Error::other(format!("Failed to read {}: {e}", m.filename)))?;
+            zip.start_file(format!("overrides/{}/{}", mod_type, m.filename), opts)
+                .map_err(|e| Error::other(format!("Failed to add {}: {e}", m.filename)))?;
+            zip.write_all(&data)
+                .map_err(|e| Error::other(format!("Failed to write {}: {e}", m.filename)))?;
+        }
+
+        zip.finish()
+            .map_err(|e| Error::other(format!("Failed to finalize ZIP: {e}")))?;
+        let size = std::fs::metadata(&out_path).map_err(|e| Error::other(e.to_string()))?.len();
+
+        Ok(ModpackInfo {
+            name: name.to_string(), version: version.to_string(),
+            file_path: out_path.to_string_lossy().to_string(),
+            size_bytes: size, include_count: selected.len(),
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Mod / Plugin types
+// ═══════════════════════════════════════════════════════════════════
+
+/// Information about an installed mod or plugin.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModInfo {
+    pub filename: String,
+    pub name: String,
+    pub enabled: bool,
+    pub size_bytes: u64,
+    pub size_human: String,
+    pub last_modified: String,
+}
+
+/// Information about a generated modpack.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ModpackInfo {
+    pub name: String,
+    pub version: String,
+    pub file_path: String,
+    pub size_bytes: u64,
+    pub include_count: usize,
 }

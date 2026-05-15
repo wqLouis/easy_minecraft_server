@@ -3,14 +3,16 @@
 //! for the API layer.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::instance::ServerConfig;
 use crate::manager::{ManagedServer, ServerHandle};
+use crate::world::{dir_size, human_size};
 
 // ---------------------------------------------------------------------------
 // Instance configuration
@@ -20,7 +22,7 @@ use crate::manager::{ManagedServer, ServerHandle};
 ///
 /// `server_dir` and `jar_path` are filled server-side from settings
 /// and provider/version — users should **not** send them.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InstanceConfig {
     pub id: String,
     pub name: String,
@@ -49,6 +51,18 @@ pub struct InstanceSummary {
     pub running: bool,
 }
 
+/// Summary of an archived instance.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchivedSummary {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub version: String,
+    pub archived_at: String,
+    pub size_bytes: u64,
+    pub size_human: String,
+}
+
 // ---------------------------------------------------------------------------
 // Persisted config file format
 // ---------------------------------------------------------------------------
@@ -65,10 +79,13 @@ struct SavedConfigs {
 /// Thread-safe registry of managed server instances.
 ///
 /// Configs are persisted to a JSON file so they survive restarts.
+/// When an instance is removed, its server directory is moved to
+/// `_archived/` rather than deleted, so sudoers can restore it later.
 #[derive(Clone)]
 pub struct ServerRegistry {
     instances: Arc<RwLock<HashMap<String, ManagedServer>>>,
     config_path: PathBuf,
+    archive_root: PathBuf,
 }
 
 impl ServerRegistry {
@@ -77,9 +94,17 @@ impl ServerRegistry {
     /// If the file does not exist an empty registry is returned.
     pub fn new(config_path: PathBuf) -> Self {
         let instances = Arc::new(RwLock::new(HashMap::new()));
+
+        // Archive root: `_archived/` next to the config file
+        let archive_root = config_path
+            .parent()
+            .map(|p| p.join("_archived"))
+            .unwrap_or_else(|| PathBuf::from("./data/_archived"));
+
         let registry = Self {
             instances: instances.clone(),
             config_path,
+            archive_root,
         };
 
         // Load previously saved configs
@@ -118,19 +143,63 @@ impl ServerRegistry {
         Ok(())
     }
 
-    /// Remove a server instance (stop it first if running).
+    /// Remove (archive) a server instance.
+    ///
+    /// The server must be stopped first. Its directory is moved to
+    /// `_archived/{id}/` so a sudoer can restore it later.
     pub fn remove(&self, id: &str) -> Result<(), Error> {
-        let mut instances = self
-            .instances
-            .write()
-            .map_err(|e| Error::other(format!("Registry lock: {e}")))?;
-
-        instances
-            .remove(id)
+        // Read the server config *before* removing from the map
+        let (config, handle) = self
+            .get_info(id)
             .ok_or_else(|| Error::other(format!("Instance '{id}' not found")))?;
 
-        drop(instances);
+        if handle.is_running() {
+            return Err(Error::other(
+                "Cannot archive a running server. Stop it first.",
+            ));
+        }
+
+        let src = PathBuf::from(&config.server_dir);
+        let dst = self.archive_root.join(id);
+
+        // Move the server directory to archive
+        if src.exists() {
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| Error::other(format!("Failed to create archive dir: {e}")))?;
+            }
+            std::fs::rename(&src, &dst).map_err(|e| {
+                Error::other(format!(
+                    "Failed to archive server directory '{}': {e}",
+                    src.display()
+                ))
+            })?;
+        }
+
+        // Save the config manifest inside the archive
+        if dst.exists() {
+            let manifest_path = dst.join(".instance.json");
+            if let Ok(content) = serde_json::to_string_pretty(&config) {
+                let _ = std::fs::write(&manifest_path, content);
+            }
+        }
+
+        // Remove from the in-memory registry
+        {
+            let mut instances = self
+                .instances
+                .write()
+                .map_err(|e| Error::other(format!("Registry lock: {e}")))?;
+            instances.remove(id);
+        }
+
         self.save_configs()?;
+        log::info!(
+            "Instance '{}' archived ({} → {})",
+            id,
+            src.display(),
+            dst.display()
+        );
         Ok(())
     }
 
@@ -152,6 +221,131 @@ impl ServerRegistry {
         drop(instances);
         self.save_configs()?;
         Ok(())
+    }
+
+    // ── Archive / Restore ──────────────────────────────────────────
+
+    /// List all archived instances.
+    pub fn list_archived(&self) -> Vec<ArchivedSummary> {
+        let mut archived = Vec::new();
+
+        let archive_dir = &self.archive_root;
+        if !archive_dir.is_dir() {
+            return archived;
+        }
+
+        let mut entries = match std::fs::read_dir(archive_dir) {
+            Ok(e) => e,
+            Err(_) => return archived,
+        };
+
+        while let Some(Ok(entry)) = entries.next() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let id = entry.file_name().to_string_lossy().to_string();
+
+            // Try to load the manifest
+            let manifest_path = path.join(".instance.json");
+            let config: Option<InstanceConfig> = std::fs::read_to_string(&manifest_path)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok());
+
+            let (name, provider, version) = config
+                .as_ref()
+                .map(|c| (c.name.clone(), c.provider.clone(), c.version.clone()))
+                .unwrap_or_else(|| (id.clone(), "unknown".into(), "unknown".into()));
+
+            // Compute directory size
+            let size_bytes = dir_size(&path).unwrap_or(0);
+
+            // Get modification time as archive timestamp
+            let archived_at = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|t| {
+                    let dt: chrono::DateTime<chrono::Utc> = t.into();
+                    dt.to_rfc3339()
+                })
+                .unwrap_or_default();
+
+            archived.push(ArchivedSummary {
+                id,
+                name,
+                provider,
+                version,
+                archived_at,
+                size_bytes,
+                size_human: human_size(size_bytes),
+            });
+        }
+
+        // Sort newest first
+        archived.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
+        archived
+    }
+
+    /// Restore an archived instance back into the active registry.
+    ///
+    /// Moves the directory from `_archived/{id}/` back to its original
+    /// location (read from `.instance.json` manifest).
+    pub fn restore_archived(&self, id: &str) -> Result<(), Error> {
+        let archived_dir = self.archive_root.join(id);
+        if !archived_dir.is_dir() {
+            return Err(Error::other(format!(
+                "Archived instance '{id}' not found at {}",
+                archived_dir.display()
+            )));
+        }
+
+        // Read the manifest
+        let manifest_path = archived_dir.join(".instance.json");
+        let manifest_str = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| Error::other(format!("Failed to read manifest: {e}")))?;
+        let config: InstanceConfig = serde_json::from_str(&manifest_str)
+            .map_err(|e| Error::other(format!("Failed to parse manifest: {e}")))?;
+
+        // Check the original location is free
+        let dst = PathBuf::from(&config.server_dir);
+        if dst.exists() {
+            return Err(Error::other(format!(
+                "Target directory already exists: {}",
+                dst.display()
+            )));
+        }
+
+        // Move back
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::other(format!("Failed to create server dir: {e}")))?;
+        }
+        std::fs::rename(&archived_dir, &dst).map_err(|e| {
+            Error::other(format!(
+                "Failed to restore server directory: {e}"
+            ))
+        })?;
+
+        // Re-register
+        let server = config.to_managed_server();
+        {
+            let mut instances = self
+                .instances
+                .write()
+                .map_err(|e| Error::other(format!("Registry lock: {e}")))?;
+            instances.insert(id.to_string(), server);
+        }
+        self.save_configs()?;
+
+        log::info!("Instance '{}' restored from archive", id);
+        Ok(())
+    }
+
+    /// Get the archive root path.
+    pub fn archive_root(&self) -> &Path {
+        &self.archive_root
     }
 
     // ── Queries ────────────────────────────────────────────────────
@@ -226,9 +420,9 @@ impl ServerRegistry {
     }
 
     /// Send a console command to a running server.
-    pub fn send_command(&self, id: &str, cmd: &str) -> Result<(), Error> {
+    pub async fn send_command(&self, id: &str, cmd: &str) -> Result<(), Error> {
         let server = self.get_server(id)?;
-        server.send_command(cmd)
+        server.send_command(cmd).await
     }
 
     // ── Persistence ────────────────────────────────────────────────
@@ -289,6 +483,12 @@ impl ServerRegistry {
 // ---------------------------------------------------------------------------
 // Conversions
 // ---------------------------------------------------------------------------
+
+/// Generate the JSON Schema for [`InstanceConfig`].
+pub fn instance_config_schema() -> serde_json::Value {
+    let schema = schemars::schema_for!(InstanceConfig);
+    serde_json::to_value(&schema).unwrap_or_default()
+}
 
 impl InstanceConfig {
     fn to_managed_server(&self) -> ManagedServer {

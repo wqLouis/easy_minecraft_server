@@ -7,9 +7,9 @@ use axum::{
     response::Response,
 };
 
-use crate::auth::{check_ip_whitelist, client_ip, extract_bearer_token, resolve_user_from_api_key, AppState};
-use crate::blacklist;
+use crate::auth::{check_ip_whitelist, client_ip, extract_credentials, resolve_user, AppState};
 use crate::errors::AppError;
+use crate::ip_ban;
 use crate::models::User;
 
 // ---------------------------------------------------------------------------
@@ -38,15 +38,15 @@ pub async fn require_auth(
     mut req: Request,
     next: Next,
 ) -> Result<Response, AppError> {
-    let api_key = match extract_bearer_token(req.headers()) {
-        Ok(k) => k,
+    let (username, token) = match extract_credentials(req.headers()) {
+        Ok(c) => c,
         Err(e) => {
             record_failure(&state, &req);
             return Err(e);
         }
     };
 
-    let user = match resolve_user_from_api_key(&state.db, &api_key).await {
+    let user = match resolve_user(&state.db, &username, &token).await {
         Ok(u) => u,
         Err(e) => {
             record_failure(&state, &req);
@@ -110,6 +110,6 @@ fn record_failure(state: &Arc<AppState>, req: &Request) {
         log::warn!("IP {} blacklisted after too many failed auth attempts", ip);
         // Persist to blacklist.json immediately
         let ips: Vec<String> = state.ip_ban.read().unwrap().blacklist().to_vec();
-        let _ = blacklist::save_blacklist(&state.blacklist_path, &ips);
+        let _ = ip_ban::save_blacklist(&state.blacklist_path, &ips);
     }
 }
