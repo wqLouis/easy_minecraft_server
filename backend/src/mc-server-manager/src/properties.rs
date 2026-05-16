@@ -65,4 +65,17 @@ impl ServerProperties {
     pub fn is_empty(&self) -> bool { self.properties.is_empty() }
     pub fn all(&self) -> &HashMap<String, String> { &self.properties }
     pub fn path(&self) -> &Path { &self.path }
+    /// Re-read the file from disk, merging any new keys into the current map.
+    pub fn reload(&mut self) -> Result<(), Error> {
+        let content = std::fs::read_to_string(&self.path)?;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if let Some(eq) = trimmed.find('=') {
+                if !trimmed.starts_with('#') {
+                    self.properties.insert(trimmed[..eq].trim().to_string(), trimmed[eq + 1..].trim().to_string());
+                }
+            }
+        }
+        Ok(())
+    }
 }

@@ -1,115 +1,45 @@
+//! Axum middleware — IP ban check, auth, sudo check, rate limiter.
 use std::sync::Arc;
-
-use axum::{
-    extract::Request,
-    extract::State,
-    middleware::Next,
-    response::Response,
-};
-
+use std::time::Instant;
+use axum::{extract::{Request, State}, middleware::Next, response::Response};
 use crate::auth::{check_ip_whitelist, client_ip, extract_credentials, resolve_user, AppState};
 use crate::errors::AppError;
 use crate::ip_ban;
 use crate::models::User;
 
-// ---------------------------------------------------------------------------
-// check_ip_ban — reject banned IPs early (runs before auth)
-// ---------------------------------------------------------------------------
-
-pub async fn check_ip_ban(
-    State(state): State<Arc<AppState>>,
-    req: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    if let Some(ip) = client_ip(&req) {
-        if state.ip_ban.read().unwrap().is_banned(&ip) {
-            return Err(AppError::IpBanned);
-        }
-    }
+pub async fn check_ip_ban(State(s): State<Arc<AppState>>, req: Request, next: Next) -> Result<Response, AppError> {
+    let tp = s.settings.read().map(|s| s.trust_proxy_headers).unwrap_or(false);
+    if let Some(ip) = client_ip(&req, tp) { if s.ip_ban.read().unwrap().is_banned(&ip) { return Err(AppError::IpBanned); } }
     Ok(next.run(req).await)
 }
 
-// ---------------------------------------------------------------------------
-// require_auth — rejects requests with missing/invalid API key
-// ---------------------------------------------------------------------------
+fn check_rate_limit(state: &Arc<AppState>, req: &Request) -> Result<(), AppError> {
+    let ip = client_ip(req, state.settings.read().map(|s| s.trust_proxy_headers).unwrap_or(false)).unwrap_or_else(|| "unknown".into());
+    let now = Instant::now();
+    let mut limiter = state.rate_limiter.lock().unwrap();
+    let entries = limiter.entry(ip).or_insert_with(Vec::new);
+    entries.retain(|t| now.duration_since(*t).as_secs() < 60);
+    if entries.len() >= 60 { return Err(AppError::Internal("Rate limit exceeded (60 req/min)".into())); }
+    entries.push(now);
+    Ok(())
+}
 
-pub async fn require_auth(
-    State(state): State<Arc<AppState>>,
-    mut req: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    let (username, token) = match extract_credentials(req.headers()) {
-        Ok(c) => c,
-        Err(e) => {
-            record_failure(&state, &req);
-            return Err(e);
-        }
-    };
-
-    let user = match resolve_user(&state.db, &username, &token).await {
-        Ok(u) => u,
-        Err(e) => {
-            record_failure(&state, &req);
-            return Err(e);
-        }
-    };
-
-    // Successful auth — clear failure history for this IP
-    let client_ip_opt = client_ip(&req);
-    if let Some(ref ip) = client_ip_opt {
-        state.ip_ban.write().unwrap().clear_failures(ip);
-    }
-
-    // Enforce IP whitelist (if enabled in settings)
-    if let Some(ref ip) = client_ip_opt {
-        let enabled = state
-            .settings
-            .read()
-            .map(|s| s.ip_whitelist_enabled)
-            .unwrap_or(false);
-
-        check_ip_whitelist(&state.db, &user.id, ip, enabled).await?;
-    }
-
+pub async fn require_auth(State(s): State<Arc<AppState>>, mut req: Request, next: Next) -> Result<Response, AppError> {
+    check_rate_limit(&s, &req)?;
+    let tp = s.settings.read().map(|s| s.trust_proxy_headers).unwrap_or(false);
+    let (username, token) = extract_credentials(req.headers()).map_err(|e| { record(&s, &req, tp); e })?;
+    let user = resolve_user(&s.db, &username, &token).await.map_err(|e| { record(&s, &req, tp); e })?;
+    if let Some(ip) = client_ip(&req, tp) { s.ip_ban.write().unwrap().clear_failures(&ip); }
+    if let Some(ip) = client_ip(&req, tp) { check_ip_whitelist(&s.db, &user.id, &ip, s.settings.read().map(|s| s.ip_whitelist_enabled).unwrap_or(false)).await?; }
     req.extensions_mut().insert(user);
     Ok(next.run(req).await)
 }
 
-// ---------------------------------------------------------------------------
-// require_sudo — rejects if the already-authenticated user is not a sudoer
-//
-// This middleware assumes `require_auth` has already run and inserted a
-// `User` extension. It does NOT re-authenticate.
-// ---------------------------------------------------------------------------
-
-pub async fn require_sudo(
-    req: Request,
-    next: Next,
-) -> Result<Response, AppError> {
-    let user = req
-        .extensions()
-        .get::<User>()
-        .ok_or(AppError::ApiKeyNotFound)?;
-
-    if !user.is_sudoer {
-        return Err(AppError::SudoRequired);
-    }
-
+pub async fn require_sudo(req: Request, next: Next) -> Result<Response, AppError> {
+    if !req.extensions().get::<User>().ok_or(AppError::ApiKeyNotFound)?.is_sudoer { return Err(AppError::SudoRequired); }
     Ok(next.run(req).await)
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn record_failure(state: &Arc<AppState>, req: &Request) {
-    let Some(ip) = client_ip(req) else { return };
-
-    let newly_banned = state.ip_ban.write().unwrap().record_failure(&ip);
-    if newly_banned {
-        log::warn!("IP {} blacklisted after too many failed auth attempts", ip);
-        // Persist to blacklist.json immediately
-        let ips: Vec<String> = state.ip_ban.read().unwrap().blacklist().to_vec();
-        let _ = ip_ban::save_blacklist(&state.blacklist_path, &ips);
-    }
+fn record(s: &Arc<AppState>, req: &Request, trust_proxy: bool) {
+    if let Some(ip) = client_ip(req, trust_proxy) { if s.ip_ban.write().unwrap().record_failure(&ip) { log::warn!("IP {ip} blacklisted"); let _ = ip_ban::save_blacklist(&s.blacklist_path, &s.ip_ban.read().unwrap().blacklist().to_vec()); } }
 }

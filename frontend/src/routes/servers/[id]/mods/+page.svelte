@@ -3,22 +3,26 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { toast } from "svelte-sonner";
-  import { ArrowLeftIcon, PuzzleIcon, RefreshCwIcon, SearchIcon, DownloadIcon, Trash2Icon, PackageIcon, CheckCircleIcon, XCircleIcon, BoxIcon, ExternalLinkIcon, FileIcon } from "@lucide/svelte";
+  import { ArrowLeftIcon, PuzzleIcon, RefreshCwIcon, SearchIcon, DownloadIcon, Trash2Icon, PackageIcon, CheckCircleIcon, XCircleIcon, BoxIcon, ExternalLinkIcon, FileIcon, ChevronDownIcon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Input } from "$lib/components/ui/input/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Separator } from "$lib/components/ui/separator/index.js";
   import * as Tabs from "$lib/components/ui/tabs/index.js";
+  import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import { isAuthenticated, isConfigured, getApi } from "$lib/api";
 
   let loading = $state(true);
   let serverRunning = $state(false);
   let installed = $state<{ filename: string; name: string; enabled: boolean; size_human: string }[]>([]);
-  let searchResults = $state<{ slug: string; title: string; description: string; project_type: string; downloads: number; loaders: string[]; game_versions: string[]; page_url: string }[]>([]);
+  let searchResults = $state<{ slug: string; title: string; description: string; project_type: string; downloads: number; loaders: string[]; game_versions: string[]; page_url: string; icon_url?: string }[]>([]);
   let searchQuery = $state("");
   let searching = $state(false);
   let tab = $state("installed");
+  let filterType = $state("");
+  let filterLoader = $state("");
+  let filterSort = $state("relevance");
   let mpName = $state(""), mpVer = $state("1.0.0"), generating = $state(false);
   const id = $derived($page.params.id);
   const prov = $derived(($page.params as Record<string, string>).provider ?? "paper");
@@ -44,11 +48,19 @@
     finally { loading = false; }
   }
 
+  function buildSearchUrl() {
+    const params = new URLSearchParams({ query: searchQuery, limit: "20" });
+    if (filterType) params.set("type", filterType);
+    if (filterLoader) params.set("loaders", filterLoader);
+    if (filterSort) params.set("index", filterSort);
+    return `/api/modrinth/search?${params}`;
+  }
+
   async function search() {
     if (!searchQuery.trim()) return;
     searching = true;
     try {
-      const r = await getApi().get<{ results: typeof searchResults }>(`/api/modrinth/search?query=${encodeURIComponent(searchQuery)}&limit=10`);
+      const r = await getApi().get<{ results: typeof searchResults }>(buildSearchUrl());
       searchResults = r.results ?? [];
     } catch (e) { toast.error("Search failed", { description: e instanceof Error ? e.message : "" }); }
     finally { searching = false; }
@@ -85,6 +97,37 @@
   }
 
   function fmt(n: number): string { return n >= 1_000_000 ? `${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n/1_000).toFixed(1)}K` : `${n}`; }
+
+  const typeOpts = [
+    { value: "", label: "All types" },
+    { value: "mod", label: "Mod" },
+    { value: "plugin", label: "Plugin" },
+    { value: "datapack", label: "Datapack" },
+    { value: "modpack", label: "Modpack" },
+    { value: "shader", label: "Shader" },
+  ];
+  const loaderOpts = [
+    { value: "", label: "Any loader" },
+    { value: "fabric", label: "Fabric" },
+    { value: "forge", label: "Forge" },
+    { value: "neoforge", label: "NeoForge" },
+    { value: "quilt", label: "Quilt" },
+    { value: "paper", label: "Paper" },
+    { value: "purpur", label: "Purpur" },
+    { value: "spigot", label: "Spigot" },
+    { value: "waterfall", label: "Waterfall" },
+    { value: "velocity", label: "Velocity" },
+  ];
+  const sortOpts = [
+    { value: "relevance", label: "Relevance" },
+    { value: "downloads", label: "Downloads" },
+    { value: "follows", label: "Follows" },
+    { value: "newest", label: "Newest" },
+    { value: "updated", label: "Updated" },
+  ];
+  const typeLabel = $derived(typeOpts.find((o) => o.value === filterType)?.label ?? "All types");
+  const loaderLabel = $derived(loaderOpts.find((o) => o.value === filterLoader)?.label ?? "Any loader");
+  const sortLabel = $derived(sortOpts.find((o) => o.value === filterSort)?.label ?? "Relevance");
 </script>
 
 <div class="mx-auto max-w-4xl px-6 py-6">
@@ -134,23 +177,75 @@
           <div class="relative flex-1"><SearchIcon class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input bind:value={searchQuery} placeholder="Search Modrinth…" onkeydown={(e) => e.key === "Enter" && search()} class="pl-10" /></div>
           <Button onclick={search} disabled={!searchQuery.trim() || searching}>{#if searching}<RefreshCwIcon class="size-4 animate-spin" />{:else}<SearchIcon class="size-4" />{/if} Search</Button>
         </div>
+        <!-- Filters -->
+        <div class="mb-4 flex flex-wrap items-center gap-2">
+          <DropdownMenu.DropdownMenu>
+            <DropdownMenu.Trigger>
+              <Button variant="outline" size="sm" class="gap-1 text-xs">{typeLabel} <ChevronDownIcon class="size-3" /></Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content>
+              <DropdownMenu.RadioGroup bind:value={filterType}>
+                {#each typeOpts as opt}
+                  <DropdownMenu.RadioItem value={opt.value}>{opt.label}</DropdownMenu.RadioItem>
+                {/each}
+              </DropdownMenu.RadioGroup>
+            </DropdownMenu.Content>
+          </DropdownMenu.DropdownMenu>
+          <DropdownMenu.DropdownMenu>
+            <DropdownMenu.Trigger>
+              <Button variant="outline" size="sm" class="gap-1 text-xs">{loaderLabel} <ChevronDownIcon class="size-3" /></Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content>
+              <DropdownMenu.RadioGroup bind:value={filterLoader}>
+                {#each loaderOpts as opt}
+                  <DropdownMenu.RadioItem value={opt.value}>{opt.label}</DropdownMenu.RadioItem>
+                {/each}
+              </DropdownMenu.RadioGroup>
+            </DropdownMenu.Content>
+          </DropdownMenu.DropdownMenu>
+          <DropdownMenu.DropdownMenu>
+            <DropdownMenu.Trigger>
+              <Button variant="outline" size="sm" class="gap-1 text-xs">{sortLabel} <ChevronDownIcon class="size-3" /></Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content>
+              <DropdownMenu.RadioGroup bind:value={filterSort}>
+                {#each sortOpts as opt}
+                  <DropdownMenu.RadioItem value={opt.value}>{opt.label}</DropdownMenu.RadioItem>
+                {/each}
+              </DropdownMenu.RadioGroup>
+            </DropdownMenu.Content>
+          </DropdownMenu.DropdownMenu>
+        </div>
+        <div class="max-h-[55dvh] overflow-y-auto pb-6 [mask-image:linear-gradient(to_bottom,black_85%,transparent_100%)]">
         {#if searching}
           <div class="flex items-center justify-center py-12"><RefreshCwIcon class="size-6 animate-spin text-muted-foreground" /></div>
         {:else if searchResults.length > 0}
           <div class="grid gap-3">
             {#each searchResults as r}
               <Card.Root size="sm" class="transition-colors hover:bg-accent/20">
-                <Card.Content class="flex items-start justify-between gap-4">
-                  <div class="min-w-0 flex-1">
-                    <div class="flex items-center gap-2"><PackageIcon class="size-4 shrink-0 text-muted-foreground" /><span class="font-medium truncate">{r.title}</span><Badge variant="outline" class="text-[10px] shrink-0">{r.project_type}</Badge></div>
-                    <p class="mt-1 text-xs text-muted-foreground line-clamp-2">{r.description}</p>
-                    <div class="mt-2 flex flex-wrap gap-1"><Badge variant="secondary" class="text-[10px]">{fmt(r.downloads)} downloads</Badge>{#each r.loaders.slice(0, 2) as l}<Badge variant="outline" class="text-[10px]">{l}</Badge>{/each}{#each r.game_versions.slice(0, 2) as v}<Badge variant="outline" class="text-[10px]">{v}</Badge>{/each}</div>
-                  </div>
-                  <div class="flex shrink-0 items-center gap-1">
-                    <Button size="sm" onclick={() => installMod(r.slug)}><DownloadIcon class="size-4" /> Install</Button>
-                    <a href={r.page_url} target="_blank" rel="noopener noreferrer"><Button variant="ghost" size="icon-sm"><ExternalLinkIcon class="size-4" /></Button></a>
-                  </div>
-                </Card.Content>
+                <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+                <div class="cursor-pointer" onclick={() => goto(`/servers/${id}/mods/${r.slug}`)} onkeydown={(e) => e.key === 'Enter' && goto(`/servers/${id}/mods/${r.slug}`)} role="link" tabindex="0">
+                  <Card.Content class="flex items-start justify-between gap-4">
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-center gap-2">
+                        {#if r.icon_url}
+                          <img src={r.icon_url} alt={r.title} class="size-5 shrink-0 rounded object-contain" onerror={(e) => { (e.target as HTMLImageElement).style.display = 'none'; (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden'); }} />
+                          <PackageIcon class="size-5 shrink-0 text-muted-foreground hidden" />
+                        {:else}
+                          <PackageIcon class="size-5 shrink-0 text-muted-foreground" />
+                        {/if}
+                        <span class="font-medium truncate">{r.title}</span>
+                        <Badge variant="outline" class="text-[10px] shrink-0">{r.project_type}</Badge>
+                      </div>
+                      <p class="mt-1 text-xs text-muted-foreground line-clamp-2">{r.description}</p>
+                      <div class="mt-2 flex flex-wrap gap-1"><Badge variant="secondary" class="text-[10px]">{fmt(r.downloads)} downloads</Badge>{#each r.loaders.slice(0, 2) as l}<Badge variant="outline" class="text-[10px]">{l}</Badge>{/each}{#each r.game_versions.slice(0, 2) as v}<Badge variant="outline" class="text-[10px]">{v}</Badge>{/each}</div>
+                    </div>
+                    <div class="flex shrink-0 items-center gap-1" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="none">
+                      <Button size="sm" onclick={() => goto(`/servers/${id}/mods/${r.slug}`)}><DownloadIcon class="size-4" /> Install</Button>
+                      <a href={r.page_url} target="_blank" rel="noopener noreferrer"><Button variant="ghost" size="icon-sm"><ExternalLinkIcon class="size-4" /></Button></a>
+                    </div>
+                  </Card.Content>
+                </div>
               </Card.Root>
             {/each}
           </div>
@@ -159,6 +254,7 @@
         {:else}
           <Card.Root size="sm"><Card.Content class="py-8 text-center text-sm text-muted-foreground"><SearchIcon class="mx-auto mb-2 size-8" /><p>Search for mods and plugins on Modrinth.</p></Card.Content></Card.Root>
         {/if}
+        </div>
       </Tabs.Content>
 
       <Tabs.Content value="modpack">

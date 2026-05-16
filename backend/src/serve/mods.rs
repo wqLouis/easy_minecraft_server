@@ -1,319 +1,104 @@
-//! Mod/plugin management handlers, Modrinth API proxy, and modpack generation.
-
+//! Mod/plugin handlers and Modrinth API proxy.
 use std::sync::Arc;
-
-use axum::{
-    body::Body,
-    extract::{Path, Query, State},
-    response::Response as AxResponse,
-    Extension, Json,
-};
+use axum::{body::Body, extract::{Path, Query, State}, response::Response as AxResponse, Extension, Json};
 use serde::Deserialize;
 use serde_json::json;
-
 use crate::auth::AppState;
 use crate::errors::AppError;
 use crate::models::User;
 use mc_server_manager::mc_server_installer::modrinth;
 
-// ═══════════════════════════════════════════════════════════════════
-// Modrinth API (external API proxy — data layer is in mc-server-installer)
-// ═══════════════════════════════════════════════════════════════════
-
-#[derive(serde::Deserialize)]
-pub struct ModrinthSearchQuery {
+#[derive(Deserialize)]
+pub struct SearchQ {
     pub query: String,
-    #[serde(rename = "type")]
-    pub project_type: Option<String>,
+    #[serde(rename = "type")] pub project_type: Option<String>,
     pub loaders: Option<String>,
+    pub versions: Option<String>,
+    pub client_side: Option<String>,
+    pub server_side: Option<String>,
+    pub open_source: Option<bool>,
+    pub index: Option<String>,
+    pub offset: Option<u32>,
     pub limit: Option<u32>,
 }
-
-/// GET /api/modrinth/search — search Modrinth for mods/plugins.
-pub async fn modrinth_search(
-    Extension(_user): Extension<User>,
-    Query(query): Query<ModrinthSearchQuery>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let limit = query.limit.unwrap_or(10).min(50);
-
-    // Parse loaders: "paper,fabric" → ["paper", "fabric"]
-    let loaders: Option<Vec<&str>> = query.loaders.as_ref().map(|s| {
-        s.split(',').map(|s| s.trim()).collect()
-    });
-    let loaders_ref: Option<&[&str]> = loaders.as_deref();
-
+pub async fn modrinth_search(Extension(_u): Extension<User>, Query(q): Query<SearchQ>) -> Result<Json<serde_json::Value>, AppError> {
+    let limit = q.limit.unwrap_or(10).min(100);
+    let offset = q.offset.unwrap_or(0);
+    let loaders: Option<Vec<&str>> = q.loaders.as_ref().map(|s| s.split(',').map(|s| s.trim()).collect());
+    let versions: Option<Vec<&str>> = q.versions.as_ref().map(|s| s.split(',').map(|s| s.trim()).collect());
     let results = modrinth::search(
-        &query.query,
-        query.project_type.as_deref(),
-        loaders_ref,
-        limit,
-    )
-    .await
-    .map_err(|e| AppError::Internal(format!("Modrinth search failed: {e}")))?;
-
-    let total_hits = results.len();
-    Ok(Json(json!({
-        "results": results,
-        "total_hits": total_hits,
-    })))
+        &q.query, q.project_type.as_deref(),
+        loaders.as_deref(), versions.as_deref(),
+        q.client_side.as_deref(), q.server_side.as_deref(),
+        q.open_source, q.index.as_deref(),
+        offset, limit,
+    ).await.map_err(|e| AppError::Internal(format!("Modrinth search failed: {e}")))?;
+    Ok(Json(json!({"results": results, "total_hits": results.len()})))
 }
 
-#[derive(serde::Deserialize)]
-pub struct ProjectVersionsQuery {
-    pub mc_version: Option<String>,
-    pub loader: Option<String>,
-}
-
-/// GET /api/modrinth/project/{slug}/versions — fetch versions for a project.
-pub async fn modrinth_project_versions(
-    Extension(_user): Extension<User>,
-    Path(slug): Path<String>,
-    Query(query): Query<ProjectVersionsQuery>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let versions = modrinth::fetch_versions(
-        &slug,
-        query.mc_version.as_deref(),
-        query.loader.as_deref(),
-    )
-    .await
-    .map_err(|e| AppError::Internal(format!("Failed to fetch versions: {e}")))?;
-
-    Ok(Json(json!({
-        "slug": slug,
-        "versions": versions,
-    })))
-}
-
-#[derive(serde::Deserialize)]
-pub struct DownloadUrlQuery {
-    pub mc_version: String,
-    pub loader: String,
-}
-
-/// GET /api/modrinth/project/{slug}/download-url — get primary download URL.
-pub async fn modrinth_download_url(
-    Extension(_user): Extension<User>,
-    Path(slug): Path<String>,
-    Query(query): Query<DownloadUrlQuery>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let download_url = modrinth::get_download_url(
-        &slug,
-        &query.mc_version,
-        &query.loader,
-    )
-    .await
-    .map_err(|e| AppError::Internal(format!("Failed to get download URL: {e}")))?;
-
-    // Extract filename from URL
-    let filename = download_url
-        .rsplit('/')
-        .next()
-        .unwrap_or("unknown.jar")
-        .to_string();
-
-    Ok(Json(json!({
-        "slug": slug,
-        "download_url": download_url,
-        "filename": filename,
-        "mc_version": query.mc_version,
-        "loader": query.loader,
-    })))
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Instance mod/plugin management
-// ═══════════════════════════════════════════════════════════════════
-
-
-
-/// GET /api/instances/{id}/mods — list installed mods/plugins.
-pub async fn list_mods(
-    State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<User>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let server = state
-        .server_registry
-        .get_server(&id)
-        .map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
-
-    let items = server
-        .list_mods()
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-    let mod_type = server.mod_type();
-    let dir_name = if mod_type == "mod" { "mods" } else { "plugins" };
-
-    Ok(Json(json!({
-        "id": id,
-        "type": mod_type,
-        "directory": dir_name,
-        "items": items,
-    })))
+pub async fn modrinth_project(Extension(_u): Extension<User>, Path(slug): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
+    let project = modrinth::get_project(&slug).await.map_err(|e| AppError::Internal(format!("Failed to fetch project: {e}")))?;
+    Ok(Json(json!(project)))
 }
 
 #[derive(Deserialize)]
-pub struct InstallModRequest {
-    pub download_url: String,
-    pub filename: String,
-}
-
-/// POST /api/instances/{id}/mods/install — download and install a mod/plugin.
-pub async fn install_mod(
-    State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<User>,
-    Path(id): Path<String>,
-    Json(body): Json<InstallModRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let server = state
-        .server_registry
-        .get_server(&id)
-        .map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
-
-    let mod_info = server
-        .install_mod(&body.download_url, &body.filename)
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    let mods_dir = server.mods_dir();
-    let file_path = mods_dir.join(&mod_info.filename);
-
-    Ok(Json(json!({
-        "installed": true,
-        "id": id,
-        "filename": mod_info.filename,
-        "path": file_path.to_string_lossy(),
-        "size_bytes": mod_info.size_bytes,
-    })))
-}
-
-/// DELETE /api/instances/{id}/mods/{filename} — remove a mod/plugin.
-pub async fn delete_mod(
-    State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<User>,
-    Path((id, filename)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let server = state
-        .server_registry
-        .get_server(&id)
-        .map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
-
-    if server.handle().is_running() {
-        return Err(AppError::Internal(
-            "Cannot delete mod/plugin while server is running. Stop the server first.".into(),
-        ));
-    }
-
-    server
-        .delete_mod(&filename)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    Ok(Json(json!({
-        "removed": true,
-        "id": id,
-        "filename": filename,
-    })))
+pub struct VerQ { pub mc_version: Option<String>, pub loader: Option<String> }
+pub async fn modrinth_project_versions(Extension(_u): Extension<User>, Path(slug): Path<String>, Query(q): Query<VerQ>) -> Result<Json<serde_json::Value>, AppError> {
+    let versions = modrinth::fetch_versions(&slug, q.mc_version.as_deref(), q.loader.as_deref()).await.map_err(|e| AppError::Internal(format!("Failed to fetch versions: {e}")))?;
+    Ok(Json(json!({"slug": slug, "versions": versions})))
 }
 
 #[derive(Deserialize)]
-pub struct ToggleModRequest {
-    pub enabled: bool,
+pub struct DlQ { pub mc_version: String, pub loader: String }
+pub async fn modrinth_download_url(Extension(_u): Extension<User>, Path(slug): Path<String>, Query(q): Query<DlQ>) -> Result<Json<serde_json::Value>, AppError> {
+    let url = modrinth::get_download_url(&slug, &q.mc_version, &q.loader).await.map_err(|e| AppError::Internal(format!("Failed to get download URL: {e}")))?;
+    let filename = url.rsplit('/').next().unwrap_or("unknown.jar").to_string();
+    Ok(Json(json!({"slug": slug, "download_url": url, "filename": filename, "mc_version": q.mc_version, "loader": q.loader})))
 }
 
-/// PUT /api/instances/{id}/mods/{filename}/toggle — enable or disable a mod/plugin.
-pub async fn toggle_mod(
-    State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<User>,
-    Path((id, filename)): Path<(String, String)>,
-    Json(body): Json<ToggleModRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let server = state
-        .server_registry
-        .get_server(&id)
-        .map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
-
-    let info = server
-        .toggle_mod(&filename, body.enabled)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    Ok(Json(json!({
-        "id": id,
-        "filename": info.filename,
-        "enabled": info.enabled,
-    })))
+pub async fn list_mods(State(s): State<Arc<AppState>>, Extension(_u): Extension<User>, Path(id): Path<String>) -> Result<Json<serde_json::Value>, AppError> {
+    let server = s.server_registry.get_server(&id).map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
+    let items = server.list_mods().map_err(|e| AppError::Internal(e.to_string()))?;
+    let dir = if server.mod_type() == "mod" { "mods" } else { "plugins" };
+    Ok(Json(json!({"id": id, "type": server.mod_type(), "directory": dir, "items": items})))
 }
 
 #[derive(Deserialize)]
-pub struct GenerateModpackRequest {
-    pub name: String,
-    pub version: String,
-    pub include: Option<Vec<String>>,
+pub struct InstallReq { pub download_url: String, pub filename: String }
+pub async fn install_mod(State(s): State<Arc<AppState>>, Extension(_u): Extension<User>, Path(id): Path<String>, Json(body): Json<InstallReq>) -> Result<Json<serde_json::Value>, AppError> {
+    let server = s.server_registry.get_server(&id).map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
+    let m = server.install_mod(&body.download_url, &body.filename).await.map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({"installed": true, "id": id, "filename": m.filename, "path": server.mods_dir().join(&m.filename).to_string_lossy(), "size_bytes": m.size_bytes})))
 }
 
-/// POST /api/instances/{id}/mods/modpack — generate a Modrinth modpack.
-pub async fn generate_modpack(
-    State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<User>,
-    Path(id): Path<String>,
-    Json(body): Json<GenerateModpackRequest>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let server = state
-        .server_registry
-        .get_server(&id)
-        .map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
-
-    let include = body.include.unwrap_or_default();
-    let modpack = server
-        .generate_modpack(&body.name, &body.version, &include)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    Ok(Json(json!({
-        "generated": true,
-        "id": id,
-        "name": modpack.name,
-        "version": modpack.version,
-        "modpack_file": modpack.file_path,
-        "size_bytes": modpack.size_bytes,
-        "include_count": modpack.include_count,
-    })))
+pub async fn delete_mod(State(s): State<Arc<AppState>>, Extension(_u): Extension<User>, Path((id, filename)): Path<(String, String)>) -> Result<Json<serde_json::Value>, AppError> {
+    let server = s.server_registry.get_server(&id).map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
+    if server.handle().is_running() { return Err(AppError::Internal("Cannot delete mod while server is running".into())); }
+    server.delete_mod(&filename).map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({"removed": true, "id": id, "filename": filename})))
 }
 
-/// GET /api/instances/{id}/mods/modpack/download — download the generated modpack.
-pub async fn download_modpack(
-    State(state): State<Arc<AppState>>,
-    Extension(_user): Extension<User>,
-    Path(id): Path<String>,
-) -> Result<AxResponse, AppError> {
-    let server = state
-        .server_registry
-        .get_server(&id)
-        .map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
+#[derive(Deserialize)]
+pub struct ToggleReq { pub enabled: bool }
+pub async fn toggle_mod(State(s): State<Arc<AppState>>, Extension(_u): Extension<User>, Path((id, filename)): Path<(String, String)>, Json(body): Json<ToggleReq>) -> Result<Json<serde_json::Value>, AppError> {
+    let server = s.server_registry.get_server(&id).map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
+    let info = server.toggle_mod(&filename, body.enabled).map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({"id": id, "filename": info.filename, "enabled": info.enabled})))
+}
 
-    let modpack_path = server
-        .modpack_path()
-        .ok_or_else(|| AppError::Internal("No modpack has been generated yet".into()))?;
+#[derive(Deserialize)]
+pub struct ModpackReq { pub name: String, pub version: String, pub include: Option<Vec<String>> }
+pub async fn generate_modpack(State(s): State<Arc<AppState>>, Extension(_u): Extension<User>, Path(id): Path<String>, Json(body): Json<ModpackReq>) -> Result<Json<serde_json::Value>, AppError> {
+    let server = s.server_registry.get_server(&id).map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
+    let m = server.generate_modpack(&body.name, &body.version, &body.include.unwrap_or_default()).map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(json!({"generated": true, "id": id, "name": m.name, "version": m.version, "modpack_file": m.file_path, "size_bytes": m.size_bytes, "include_count": m.include_count})))
+}
 
-    if !modpack_path.is_file() {
-        return Err(AppError::Internal("Modpack file not found on disk".into()));
-    }
-
-    let data = tokio::fs::read(&modpack_path)
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to read modpack: {e}")))?;
-
-    let filename = modpack_path
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_else(|| "modpack.mrpack".to_string());
-
-    let body = Body::from(data);
-    let response = AxResponse::builder()
-        .header("Content-Type", "application/zip")
-        .header(
-            "Content-Disposition",
-            format!(r##"attachment; filename="{filename}""##),
-        )
-        .body(body)
-        .map_err(|e| AppError::Internal(e.to_string()))?;
-
-    Ok(response)
+pub async fn download_modpack(State(s): State<Arc<AppState>>, Extension(_u): Extension<User>, Path(id): Path<String>) -> Result<AxResponse, AppError> {
+    let server = s.server_registry.get_server(&id).map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
+    let mp = server.modpack_path().ok_or_else(|| AppError::Internal("No modpack generated yet".into()))?;
+    if !mp.is_file() { return Err(AppError::Internal("Modpack file not found".into())); }
+    let data = tokio::fs::read(&mp).await.map_err(|e| AppError::Internal(format!("Failed to read modpack: {e}")))?;
+    let filename = mp.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| "modpack.mrpack".to_string());
+    AxResponse::builder().header("Content-Type", "application/zip").header("Content-Disposition", format!(r##"attachment; filename="{filename}"##)).body(Body::from(data)).map_err(|e| AppError::Internal(e.to_string()))
 }

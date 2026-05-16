@@ -1,78 +1,36 @@
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
+//! API error types and HTTP response conversion.
+use axum::{http::StatusCode, response::IntoResponse, Json};
 use serde_json::json;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
-
-    #[error("Crypto error: {0}")]
-    CryptoHash(String),
-
-    #[error("Username already exists")]
-    UsernameAlreadyExists,
-
-    #[error("API key not found or invalid")]
-    ApiKeyNotFound,
-
-    #[error("Missing Authorization header")]
-    MissingAuthHeader,
-
-    #[error("Invalid Authorization header format")]
-    InvalidAuthHeader,
-
-    #[error("Sudo privileges required")]
-    SudoRequired,
-
-    #[error("IP is banned")]
-    IpBanned,
-
-    #[error("Internal error: {0}")]
-    Internal(String),
-
-    #[error("Invalid path: {0}")]
-    InvalidPath(String),
-
-    #[error("IP not whitelisted for this token")]
-    IpNotWhitelisted,
-}
-
-impl From<argon2::password_hash::Error> for AppError {
-    fn from(err: argon2::password_hash::Error) -> Self {
-        AppError::CryptoHash(err.to_string())
-    }
-}
-
-impl From<std::io::Error> for AppError {
-    fn from(err: std::io::Error) -> Self {
-        AppError::Internal(format!("IO error: {}", err))
-    }
+    #[error("Missing Authorization header")] MissingAuthHeader,
+    #[error("Invalid Authorization header format")] InvalidAuthHeader,
+    #[error("API key or username not found")] ApiKeyNotFound,
+    #[error("Sudo privileges required")] SudoRequired,
+    #[error("IP is banned")] IpBanned,
+    #[error("IP not whitelisted")] IpNotWhitelisted,
+    #[error("Username already exists")] UsernameAlreadyExists,
+    #[error("{0}")] Internal(String),
+    #[error("Invalid path: {0}")] InvalidPath(String),
 }
 
 impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
-        let (status, message) = match &self {
-            AppError::UsernameAlreadyExists => (StatusCode::CONFLICT, "Username already exists"),
-            AppError::ApiKeyNotFound => (StatusCode::UNAUTHORIZED, "API key not found or invalid"),
-            AppError::MissingAuthHeader => {
-                (StatusCode::UNAUTHORIZED, "Missing Authorization header")
-            }
-            AppError::InvalidAuthHeader => {
-                (StatusCode::UNAUTHORIZED, "Invalid Authorization header format")
-            }
-            AppError::SudoRequired => (StatusCode::FORBIDDEN, "Sudo privileges required"),
-            AppError::IpBanned => (StatusCode::FORBIDDEN, "Your IP has been banned"),
-            AppError::InvalidPath(_) => (StatusCode::BAD_REQUEST, "Invalid path"),
-            AppError::IpNotWhitelisted => {
-                (StatusCode::FORBIDDEN, "This token is not authorized from your IP. Authenticate from your home IP first.")
-            }
-            AppError::CryptoHash(_) | AppError::Database(_) | AppError::Internal(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-            }
+    fn into_response(self) -> axum::response::Response {
+        let (status, msg) = match &self {
+            Self::MissingAuthHeader | Self::InvalidAuthHeader | Self::ApiKeyNotFound => (StatusCode::UNAUTHORIZED, self.to_string()),
+            Self::SudoRequired => (StatusCode::FORBIDDEN, self.to_string()),
+            Self::IpBanned => (StatusCode::FORBIDDEN, self.to_string()),
+            Self::IpNotWhitelisted => (StatusCode::FORBIDDEN, self.to_string()),
+            Self::UsernameAlreadyExists => (StatusCode::CONFLICT, self.to_string()),
+            Self::InvalidPath(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error".into()),
         };
-
-        (status, Json(json!({"error": message}))).into_response()
+        (status, Json(json!({"error": msg, "code": status.as_u16()}))).into_response()
     }
 }
+
+impl From<argon2::password_hash::Error> for AppError { fn from(e: argon2::password_hash::Error) -> Self { AppError::Internal(e.to_string()) } }
+impl From<serde_json::Error> for AppError { fn from(e: serde_json::Error) -> Self { AppError::Internal(e.to_string()) } }
+impl From<sqlx::Error> for AppError { fn from(e: sqlx::Error) -> Self { AppError::Internal(e.to_string()) } }
+impl From<Box<dyn std::error::Error>> for AppError { fn from(e: Box<dyn std::error::Error>) -> Self { AppError::Internal(e.to_string()) } }

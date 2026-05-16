@@ -3,21 +3,34 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { toast } from "svelte-sonner";
-  import { ArrowLeftIcon, ServerIcon, PlayIcon, SquareIcon, RefreshCwIcon, UsersIcon, MemoryStickIcon, BoxIcon, DownloadIcon, FileTextIcon, TerminalIcon, GlobeIcon, Settings2Icon, PuzzleIcon } from "@lucide/svelte";
+  import { ArrowLeftIcon, ServerIcon, PlayIcon, SquareIcon, RefreshCwIcon, UsersIcon, MemoryStickIcon, BoxIcon, DownloadIcon, TerminalIcon, GlobeIcon, Settings2Icon, PuzzleIcon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { isAuthenticated, isConfigured, getApi, getActiveEndpoint, getApiKey } from "$lib/api";
 
   let cfg = $state<Record<string, unknown> | null>(null);
   let st = $state<Record<string, unknown> | null>(null);
+  let props = $state<Record<string, string> | null>(null);
   let loading = $state(true), toggling = $state(false), modpackDl = $state(false), noMp = $state(false);
   const id = $derived($page.params.id);
   const p = $derived(`/servers/${id}`);
   const on = $derived(st?.running as boolean ?? false);
   const pls = $derived((st?.online_players as string[] | undefined) ?? []);
+  const knownProps: Record<string, string> = {
+    "server-port": "Port",
+    "motd": "MOTD",
+    "max-players": "Max Players",
+    "online-mode": "Online Mode",
+    "difficulty": "Difficulty",
+    "gamemode": "Gamemode",
+    "pvp": "PvP",
+    "enable-command-block": "Command Blocks",
+    "spawn-protection": "Spawn Protection",
+  };
+  let propEntries = $state<[string, string][]>([]);
+  $effect(() => { propEntries = Object.entries(props ?? {}); });
   const nav = [
-    { href: "logs", icon: FileTextIcon, label: "Logs" },
-    { href: "console", icon: TerminalIcon, label: "Console" },
+    { href: "logs", icon: TerminalIcon, label: "Console" },
     { href: "world", icon: GlobeIcon, label: "World" },
     { href: "config", icon: Settings2Icon, label: "Config" },
     { href: "mods", icon: PuzzleIcon, label: "Mods" },
@@ -27,7 +40,13 @@
 
   async function fetchS() {
     loading = true;
-    try { const r = await getApi().get<{ config: Record<string, unknown>; status: Record<string, unknown> }>(`/api/instances/${id}`); cfg = r.config; st = r.status; }
+    try {
+      const [r, p] = await Promise.all([
+        getApi().get<{ config: Record<string, unknown>; status: Record<string, unknown> }>(`/api/instances/${id}`),
+        getApi().get<{ properties: Record<string, string> }>(`/api/instances/${id}/properties`).catch(() => ({ properties: {} })),
+      ]);
+      cfg = r.config; st = r.status; props = p.properties;
+    }
     catch { goto("/"); } finally { loading = false; }
   }
 
@@ -91,9 +110,29 @@
         {#if noMp}<p class="mt-1 text-xs text-muted-foreground">None available</p>{/if}
       </div>
     </div>
+    {#if props !== null}
+      <div class="mt-6 rounded-lg border bg-card p-4">
+        <div class="mb-3 flex items-center justify-between">
+          <p class="text-sm font-medium"><Settings2Icon class="inline size-4" /> Server Properties</p>
+          <a href="/servers/${id}/config" class="text-xs text-muted-foreground hover:text-foreground underline">Edit all</a>
+        </div>
+        {#if propEntries.length === 0}
+          <p class="text-sm text-muted-foreground italic">No server.properties yet. Start the server to generate default properties.</p>
+        {:else}
+          <div class="grid gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
+            {#each propEntries as [k, v]}
+              <div class="flex items-baseline gap-2 text-sm">
+                <span class="shrink-0 text-muted-foreground">{knownProps[k] ?? k}:</span>
+                <span class="truncate font-mono text-xs">{v}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
     <div class="mt-8 border-t pt-6">
       <h2 class="mb-4 text-sm font-semibold text-foreground">Management</h2>
-      <div class="grid grid-cols-5 gap-3">
+      <div class="grid grid-cols-4 gap-3">
         {#each nav as n}
           <a href="{p}/{n.href}" class="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-xl border bg-card shadow-xs transition-all hover:shadow-md hover:border-accent hover:bg-accent/10">
             <n.icon class="size-6 shrink-0 text-muted-foreground" />

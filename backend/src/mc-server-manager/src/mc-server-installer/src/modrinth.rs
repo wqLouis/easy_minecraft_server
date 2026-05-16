@@ -14,18 +14,17 @@ pub struct ModrinthProject {
     pub slug: String,
     pub title: String,
     pub description: String,
-    /// e.g. `"mod"`, `"plugin"`, `"datapack"`
     pub project_type: String,
-    /// Download count
     pub downloads: u64,
-    /// Compatible loaders: `["fabric", "forge"]`, `["paper", "purpur"]`, etc.
+    pub follows: u64,
     pub loaders: Vec<String>,
-    /// Compatible MC versions
     pub game_versions: Vec<String>,
-    /// URL for the project page
     pub page_url: String,
-    /// Latest version ID
+    pub icon_url: Option<String>,
     pub latest_version_id: Option<String>,
+    pub client_side: Option<String>,
+    pub server_side: Option<String>,
+    pub color: Option<u32>,
 }
 
 /// A specific version file of a Modrinth project.
@@ -64,12 +63,31 @@ struct SearchHit {
     description: String,
     project_type: String,
     downloads: u64,
-    /// Modrinth API v2 uses `categories` (e.g. ["paper", "bukkit", "economy"])
+    follows: u64,
     categories: Vec<String>,
-    /// Game/MC versions this project supports
     versions: Vec<String>,
-    /// Latest version ID
+    icon_url: Option<String>,
     latest_version: Option<String>,
+    client_side: Option<String>,
+    server_side: Option<String>,
+    color: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct ProjectResponse {
+    slug: String,
+    title: String,
+    description: String,
+    project_type: String,
+    downloads: u64,
+    follows: u64,
+    categories: Vec<String>,
+    versions: Vec<String>,
+    icon_url: Option<String>,
+    client_side: String,
+    server_side: String,
+    color: Option<u32>,
+    license: serde_json::Value,
 }
 
 #[derive(Deserialize)]
@@ -95,38 +113,33 @@ struct VersionFile {
 // ---------------------------------------------------------------------------
 
 /// Search for projects on Modrinth.
-///
-/// # Arguments
-/// * `query` - Search term
-/// * `project_type` - Optional filter: `"mod"`, `"plugin"`, `"datapack"`, etc.
-/// * `loaders` - Optional loader filter: `["paper"]`, `["fabric"]`, etc.
-/// * `limit` - Max results (default 10)
 pub async fn search(
     query: &str,
     project_type: Option<&str>,
     loaders: Option<&[&str]>,
+    versions: Option<&[&str]>,
+    client_side: Option<&str>,
+    server_side: Option<&str>,
+    open_source: Option<bool>,
+    index: Option<&str>,
+    offset: u32,
     limit: u32,
 ) -> Result<Vec<ModrinthProject>, Error> {
     let mut facets: Vec<String> = Vec::new();
 
-    if let Some(pt) = project_type {
-        facets.push(format!("[\"project_type:{pt}\"]"));
-    }
-    if let Some(loaders) = loaders {
-        for loader in loaders {
-            facets.push(format!("[\"categories:{loader}\"]"));
-        }
-    }
+    if let Some(pt) = project_type { facets.push(format!("[\"project_type:{pt}\"]")); }
+    if let Some(ls) = loaders { for l in ls { facets.push(format!("[\"categories:{l}\"]")); } }
+    if let Some(vs) = versions { for v in vs { facets.push(format!("[\"versions:{v}\"]")); } }
+    if let Some(cs) = client_side { facets.push(format!("[\"client_side:{cs}\"]")); }
+    if let Some(ss) = server_side { facets.push(format!("[\"server_side:{ss}\"]")); }
+    if let Some(os) = open_source { facets.push(format!("[\"open_source:{os}\"]")); }
 
-    let facets_str = if facets.is_empty() {
-        String::new()
-    } else {
+    let facets_str = if facets.is_empty() { String::new() } else {
         format!("&facets={}", urlencoding(&format!("[{}]", facets.join(","))))
     };
-
-    let url = format!(
-        "{API_BASE}/search?query={query}{facets_str}&limit={limit}"
-    );
+    let idx = index.map(|i| format!("&index={i}")).unwrap_or_default();
+    let off = if offset > 0 { format!("&offset={offset}") } else { String::new() };
+    let url = format!("{API_BASE}/search?query={query}{facets_str}{idx}{off}&limit={limit}");
 
     let resp: SearchResponse = reqwest::get(&url).await?.json().await?;
 
@@ -134,7 +147,7 @@ pub async fn search(
         .hits
         .into_iter()
         .map(|h| {
-            let project_type = h.project_type.clone();
+            let pt = h.project_type.clone();
             let slug = h.slug.clone();
             ModrinthProject {
                 slug: h.slug,
@@ -142,13 +155,42 @@ pub async fn search(
                 description: h.description,
                 project_type: h.project_type,
                 downloads: h.downloads,
-                loaders: h.categories.clone(),
-                game_versions: h.versions.clone(),
-                page_url: format!("https://modrinth.com/{}/{}", project_type, slug),
-                latest_version_id: h.latest_version.clone(),
+                follows: h.follows,
+                loaders: h.categories,
+                game_versions: h.versions,
+                page_url: format!("https://modrinth.com/{}/{}", pt, slug),
+                icon_url: h.icon_url,
+                latest_version_id: h.latest_version,
+                client_side: h.client_side,
+                server_side: h.server_side,
+                color: h.color,
             }
         })
         .collect())
+}
+
+/// Fetch full project details by slug.
+pub async fn get_project(project_slug: &str) -> Result<ModrinthProject, Error> {
+    let url = format!("{API_BASE}/project/{project_slug}");
+    let resp: ProjectResponse = reqwest::get(&url).await?.json().await?;
+    let pt = resp.project_type.clone();
+    let slug = resp.slug.clone();
+    Ok(ModrinthProject {
+        slug: resp.slug,
+        title: resp.title,
+        description: resp.description,
+        project_type: resp.project_type,
+        downloads: resp.downloads,
+        follows: resp.follows,
+        loaders: resp.categories,
+        game_versions: resp.versions,
+        page_url: format!("https://modrinth.com/{}/{}", pt, slug),
+        icon_url: resp.icon_url,
+        latest_version_id: None,
+        client_side: Some(resp.client_side),
+        server_side: Some(resp.server_side),
+        color: resp.color,
+    })
 }
 
 /// Fetch all versions of a project, optionally filtered by MC version and loader.
