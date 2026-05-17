@@ -3,20 +3,21 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { toast } from "svelte-sonner";
-  import { ArrowLeftIcon, PuzzleIcon, RefreshCwIcon, DownloadIcon, PackageIcon, ExternalLinkIcon, GlobeIcon, UsersIcon, ChevronDownIcon, CheckCircleIcon } from "@lucide/svelte";
+  import { ArrowLeftIcon, PuzzleIcon, RefreshCwIcon, DownloadIcon, PackageIcon, ExternalLinkIcon, GlobeIcon, UsersIcon, ChevronDownIcon, CheckCircleIcon, Link2Icon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
-  import * as Card from "$lib/components/ui/card/index.js";
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import { isAuthenticated, isConfigured, getApi } from "$lib/api";
 
   let project = $state<Record<string, unknown> | null>(null);
   let versions = $state<{ id: string; name: string; version_number: string; loaders: string[]; game_versions: string[] }[]>([]);
   let filteredVersions = $state<typeof versions>([]);
+  let dependencies = $state<{ slug: string; title: string; download_url?: string; filename?: string; icon_url?: string }[]>([]);
   let loading = $state(true);
   let installing = $state(false);
   let selectedMcVer = $state("");
   let selectedLoader = $state("");
+  let installingVersion = $state<string | null>(null);
   let provider = $state("");
   let mcVersion = $state("");
 
@@ -44,10 +45,6 @@
     } catch { /* ignore */ }
   }
 
-  $effect(() => {
-    filterVersions();
-  });
-
   async function fetchProject() {
     try {
       const r = await getApi().get<Record<string, unknown>>(`/api/modrinth/project/${slug}`);
@@ -67,7 +64,6 @@
   $effect(() => {
     if (!versions.length || !provider || !mcVersion) return;
     if (!selectedMcVer) {
-      // Pick the server's MC version if available; otherwise the first version
       if (uniqueMcVersions().includes(mcVersion)) {
         selectedMcVer = mcVersion;
       } else {
@@ -80,12 +76,31 @@
     }
   });
 
+  // Fetch dependencies whenever selection changes (only for MC versions the mod actually supports)
+  $effect(() => {
+    if (!selectedMcVer || !selectedLoader) return;
+    // Skip initial auto-select bootstrap — only fetch when user-changed or stable
+    if (!uniqueMcVersions().includes(selectedMcVer)) return;
+    fetchDependencies();
+  });
+
+  async function fetchDependencies() {
+    try {
+      const deps = await getApi().get<{ slug: string; title: string; download_url?: string; filename?: string; icon_url?: string }[]>(
+        `/api/modrinth/project/${slug}/dependencies?mc_version=${encodeURIComponent(selectedMcVer)}&loader=${encodeURIComponent(selectedLoader)}`
+      );
+      dependencies = deps ?? [];
+    } catch { dependencies = []; }
+  }
+
   function filterVersions() {
     let v = versions;
     if (selectedMcVer) v = v.filter((ver) => ver.game_versions.includes(selectedMcVer));
     if (selectedLoader) v = v.filter((ver) => ver.loaders.includes(selectedLoader));
     filteredVersions = v;
   }
+
+  $effect(() => { filterVersions(); });
 
   function uniqueMcVersions(): string[] {
     const set = new Set<string>();
@@ -101,18 +116,30 @@
     return [...preferred, ...rest];
   }
 
-  async function installSelected() {
-    if (!selectedMcVer || !selectedLoader) { toast.error("Select a Minecraft version and loader"); return; }
-    installing = true;
+  async function installVersion(ver: typeof filteredVersions[number]) {
+    installingVersion = ver.id;
     try {
+      const verMc = ver.game_versions[0] || selectedMcVer;
+      const verLoader = ver.loaders[0] || selectedLoader;
+      // Resolve and install dependencies for this specific version
+      const deps = await getApi().get<{ slug: string; title: string; download_url?: string; filename?: string }[]>(
+        `/api/modrinth/project/${slug}/dependencies?mc_version=${encodeURIComponent(verMc)}&loader=${encodeURIComponent(verLoader)}`
+      ).catch(() => []);
+      dependencies = deps; // update display for the user
+      for (const dep of deps) {
+        if (!dep.download_url || !dep.filename) continue;
+        try {
+          await getApi().post(`/api/instances/${id}/mods/install`, { download_url: dep.download_url, filename: dep.filename });
+        } catch { /* skip if already installed */ }
+      }
       const info = await getApi().get<{ download_url: string; filename: string }>(
-        `/api/modrinth/project/${slug}/download-url?mc_version=${encodeURIComponent(selectedMcVer)}&loader=${encodeURIComponent(selectedLoader)}`
+        `/api/modrinth/project/${slug}/download-url?mc_version=${encodeURIComponent(verMc)}&loader=${encodeURIComponent(verLoader)}`
       );
       await getApi().post(`/api/instances/${id}/mods/install`, { download_url: info.download_url, filename: info.filename });
       toast.success(`Installed "${project?.title ?? slug}"`);
       goto(`/servers/${id}/mods`);
     } catch (e) { toast.error("Install failed", { description: e instanceof Error ? e.message : "" }); }
-    finally { installing = false; }
+    finally { installingVersion = null; }
   }
 
   function fmt(n: number): string { return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : `${n}`; }
@@ -147,76 +174,90 @@
       </div>
     </div>
 
-    <!-- Version selection -->
-    <Card.Root size="sm" class="mb-6">
-      <Card.Content class="p-4">
-        <h2 class="mb-3 text-sm font-semibold">Install a version</h2>
-        <div class="mb-4 flex flex-wrap gap-3">
-          <DropdownMenu.DropdownMenu>
-            <DropdownMenu.Trigger>
-              <Button variant="outline" size="sm" class="gap-1 text-xs">{selectedMcVer || "MC version"} <ChevronDownIcon class="size-3" /></Button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content>
-              <DropdownMenu.RadioGroup bind:value={selectedMcVer}>
-                <DropdownMenu.RadioItem value="">Any</DropdownMenu.RadioItem>
-                {#each uniqueMcVersions() as mv}
-                  <DropdownMenu.RadioItem value={mv}>{mv}</DropdownMenu.RadioItem>
-                {/each}
-              </DropdownMenu.RadioGroup>
-            </DropdownMenu.Content>
-          </DropdownMenu.DropdownMenu>
-          <DropdownMenu.DropdownMenu>
-            <DropdownMenu.Trigger>
-              <Button variant="outline" size="sm" class="gap-1 text-xs">{selectedLoader || "Loader"} <ChevronDownIcon class="size-3" /></Button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content>
-              <DropdownMenu.RadioGroup bind:value={selectedLoader}>
-                <DropdownMenu.RadioItem value="">Any</DropdownMenu.RadioItem>
-                {#each uniqueLoaders() as l}
-                  <DropdownMenu.RadioItem value={l}>{l}</DropdownMenu.RadioItem>
-                {/each}
-              </DropdownMenu.RadioGroup>
-            </DropdownMenu.Content>
-          </DropdownMenu.DropdownMenu>
-        </div>
-
-        <!-- Version list -->
-        <div class="max-h-64 overflow-y-auto rounded-lg border" style="scrollbar-color: hsl(var(--border)) transparent; scrollbar-width: thin;">
-          {#if filteredVersions.length === 0}
-            <p class="py-8 text-center text-sm text-muted-foreground">No versions match the selected filters.</p>
-          {:else}
-            {#each filteredVersions as ver}
-              <div class="flex items-center justify-between border-b last:border-0 px-4 py-3 hover:bg-muted/20">
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-2">
-                    <span class="text-sm font-medium">{ver.name}</span>
-                    <Badge variant="secondary" class="text-[10px]">{ver.version_number}</Badge>
-                  </div>
-                  <div class="mt-1 flex flex-wrap gap-1">
-                    {#each ver.loaders as l}<Badge variant="outline" class="text-[10px]">{l}</Badge>{/each}
-                    {#each ver.game_versions as gv}<Badge variant="outline" class="text-[10px]">{gv}</Badge>{/each}
-                  </div>
-                </div>
-                <Button size="sm" onclick={async () => {
-                  selectedMcVer = ver.game_versions[0] || selectedMcVer;
-                  selectedLoader = ver.loaders[0] || selectedLoader;
-                  await installSelected();
-                }} disabled={installing} class="shrink-0 ml-3">
-                  <DownloadIcon class="size-4" /> Install
-                </Button>
-              </div>
+    <!-- Version selection (no longer wrapped in a Card) -->
+    <h2 class="mb-3 text-sm font-semibold">Versions</h2>
+    <div class="mb-4 flex flex-wrap gap-3">
+      <DropdownMenu.DropdownMenu>
+        <DropdownMenu.Trigger>
+          <Button variant="outline" size="sm" class="gap-1 text-xs">{selectedMcVer || "MC version"} <ChevronDownIcon class="size-3" /></Button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content>
+          <DropdownMenu.RadioGroup bind:value={selectedMcVer}>
+            <DropdownMenu.RadioItem value="">Any</DropdownMenu.RadioItem>
+            {#each uniqueMcVersions() as mv}
+              <DropdownMenu.RadioItem value={mv}>{mv}</DropdownMenu.RadioItem>
             {/each}
-          {/if}
-        </div>
-      </Card.Content>
-    </Card.Root>
-
-    <!-- Bulk install button -->
-    <div class="flex justify-end">
-      <Button onclick={installSelected} disabled={!selectedMcVer || !selectedLoader || installing} class="gap-2">
-        {#if installing}<RefreshCwIcon class="size-4 animate-spin" />{/if}
-        <DownloadIcon class="size-4" /> Install with selected options
-      </Button>
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.DropdownMenu>
+      <DropdownMenu.DropdownMenu>
+        <DropdownMenu.Trigger>
+          <Button variant="outline" size="sm" class="gap-1 text-xs">{selectedLoader || "Loader"} <ChevronDownIcon class="size-3" /></Button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content>
+          <DropdownMenu.RadioGroup bind:value={selectedLoader}>
+            <DropdownMenu.RadioItem value="">Any</DropdownMenu.RadioItem>
+            {#each uniqueLoaders() as l}
+              <DropdownMenu.RadioItem value={l}>{l}</DropdownMenu.RadioItem>
+            {/each}
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.DropdownMenu>
     </div>
+
+    <!-- Version list (no card wrapper) -->
+    <div class="mb-6 rounded-lg border" style="scrollbar-color: hsl(var(--border)) transparent; scrollbar-width: thin;">
+      {#if filteredVersions.length === 0}
+        <p class="py-8 text-center text-sm text-muted-foreground">No versions match the selected filters.</p>
+      {:else}
+        {#each filteredVersions as ver}
+          <div class="flex items-center justify-between border-b last:border-0 px-4 py-3 hover:bg-muted/20">
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="text-sm font-medium">{ver.name}</span>
+                <Badge variant="secondary" class="text-[10px]">{ver.version_number}</Badge>
+              </div>
+              <div class="mt-1 flex flex-wrap gap-1">
+                {#each ver.loaders as l}<Badge variant="outline" class="text-[10px]">{l}</Badge>{/each}
+                {#each ver.game_versions as gv}<Badge variant="outline" class="text-[10px]">{gv}</Badge>{/each}
+              </div>
+            </div>
+            <Button size="sm" onclick={() => installVersion(ver)} disabled={installingVersion !== null} class="shrink-0 ml-3">
+              {#if installingVersion === ver.id}
+                <RefreshCwIcon class="size-4 animate-spin" />
+              {:else}
+                <DownloadIcon class="size-4" />
+              {/if}
+              Install
+            </Button>
+          </div>
+        {/each}
+      {/if}
+    </div>
+
+    <!-- Dependencies section -->
+    {#if dependencies.length > 0}
+      <h2 class="mb-3 text-sm font-semibold">Required Dependencies</h2>
+      <div class="rounded-lg border">
+        {#each dependencies as dep}
+          <div class="flex items-center gap-3 border-b last:border-0 px-4 py-3">
+            {#if dep.icon_url}
+              <img src={dep.icon_url} alt={dep.title} class="size-8 shrink-0 rounded object-contain" />
+            {:else}
+              <div class="flex size-8 shrink-0 items-center justify-center rounded bg-muted"><Link2Icon class="size-4 text-muted-foreground" /></div>
+            {/if}
+            <div class="min-w-0 flex-1">
+              <span class="text-sm font-medium">{dep.title}</span>
+              <span class="ml-2 text-[10px] text-muted-foreground">{dep.slug}</span>
+            </div>
+            {#if dep.download_url}
+              <a href={dep.download_url} target="_blank" rel="noopener noreferrer" class="shrink-0">
+                <Button variant="outline" size="sm" class="gap-1 text-xs"><ExternalLinkIcon class="size-3" /> Modrinth</Button>
+              </a>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
   {/if}
 </div>
