@@ -33,6 +33,7 @@ pub async fn serve(
     _size: Option<String>,
     tmpfs_path: Option<String>,
     database_url: String,
+    cli_port: Option<u16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app_settings = settings_mod::load_settings(&settings_path);
     let ip_ban_mgr = Arc::new(std::sync::RwLock::new(crate::ip_ban::IpBanManager::new(
@@ -173,10 +174,17 @@ pub async fn serve(
         )
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+    let port = cli_port.unwrap_or_else(|| {
+        settings
+            .read()
+            .map(|s| s.port)
+            .unwrap_or(3000)
+    });
+    let addr = format!("0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .expect("Failed to bind address");
-    log::info!("Backend API listening on http://0.0.0.0:3000");
+        .unwrap_or_else(|e| panic!("Failed to bind {addr}: {e}"));
+    log::info!("Backend API listening on http://{addr}");
 
     let sig = {
         let rd = ramdisk.clone();

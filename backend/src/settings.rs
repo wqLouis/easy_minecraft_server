@@ -17,6 +17,11 @@ pub struct AppSettings {
     pub ip_whitelist_enabled: bool,
     #[serde(default)]
     pub trust_proxy_headers: bool,
+    #[serde(default = "default_port")]
+    pub port: u16,
+}
+fn default_port() -> u16 {
+    3000
 }
 fn default_servers_dir() -> String {
     "./servers".into()
@@ -36,6 +41,7 @@ impl Default for AppSettings {
             java_path: default_java_path(),
             ip_whitelist_enabled: false,
             trust_proxy_headers: false,
+            port: default_port(),
         }
     }
 }
