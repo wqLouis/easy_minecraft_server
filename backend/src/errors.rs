@@ -46,7 +46,7 @@ impl IntoResponse for AppError {
             Self::TimestampExpired => (StatusCode::UNAUTHORIZED, self.to_string()),
             Self::ApiKeyExpired => (StatusCode::UNAUTHORIZED, self.to_string()),
             Self::InvalidPath(_) | Self::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
-            Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error".into()),
+            Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
         (status, Json(json!({"error": msg, "code": status.as_u16()}))).into_response()
     }

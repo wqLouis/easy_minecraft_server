@@ -179,9 +179,10 @@ pub async fn search(
     } else {
         String::new()
     };
-    let url = format!("{API_BASE}/search?query={query}{facets_str}{idx}{off}&limit={limit}");
+    let encoded_query = urlencoding(query);
+    let url = format!("{API_BASE}/search?query={encoded_query}{facets_str}{idx}{off}&limit={limit}");
 
-    let resp: SearchResponse = reqwest::get(&url).await?.json().await?;
+    let resp: SearchResponse = get_json(&url).await?;
 
     Ok(resp
         .hits
@@ -212,7 +213,7 @@ pub async fn search(
 /// Fetch full project details by slug.
 pub async fn get_project(project_slug: &str) -> Result<ModrinthProject, Error> {
     let url = format!("{API_BASE}/project/{project_slug}");
-    let resp: ProjectResponse = reqwest::get(&url).await?.json().await?;
+    let resp: ProjectResponse = get_json(&url).await?;
     let pt = resp.project_type.clone();
     let slug = resp.slug.clone();
     Ok(ModrinthProject {
@@ -253,7 +254,7 @@ pub async fn fetch_versions(
         url.push_str(&params.join("&"));
     }
 
-    let resp: Vec<VersionResponse> = reqwest::get(&url).await?.json().await?;
+    let resp: Vec<VersionResponse> = get_json(&url).await?;
 
     Ok(resp
         .into_iter()
@@ -312,7 +313,7 @@ pub async fn get_download_url(
 /// Fetch a single version by its Modrinth version ID.
 pub async fn fetch_version_by_id(version_id: &str) -> Result<ModrinthVersion, Error> {
     let url = format!("{API_BASE}/version/{version_id}");
-    let resp: VersionResponse = reqwest::get(&url).await?.json().await?;
+    let resp: VersionResponse = get_json(&url).await?;
     Ok(ModrinthVersion {
         id: resp.id,
         name: resp.name,
@@ -375,11 +376,8 @@ pub async fn resolve_dependencies(
 
         // Get project details to fetch slug and title
         let project_url = format!("{API_BASE}/project/{pid}");
-        let project: ProjectResponse = match reqwest::get(&project_url).await {
-            Ok(r) => match r.json().await {
-                Ok(p) => p,
-                Err(_) => continue,
-            },
+        let project: ProjectResponse = match get_json(&project_url).await {
+            Ok(p) => p,
             Err(_) => continue,
         };
 
@@ -438,15 +436,29 @@ pub async fn resolve_dependencies(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Helper: make a GET request and check the HTTP status before parsing JSON.
+async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T, Error> {
+    let resp = reqwest::get(url).await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(Error::HttpStatus(
+            status.as_u16(),
+            format!("{} — {}", url, body.chars().take(200).collect::<String>()),
+        ));
+    }
+    Ok(resp.json().await?)
+}
+
 fn urlencoding(input: &str) -> String {
-    // Simple URL-encoding for the characters Modrinth needs
+    // URL-encode only the minimum necessary for the facets JSON string.
+    // Commas are left as-is — Modrinth expects raw commas in the JSON.
     let mut output = String::with_capacity(input.len());
     for c in input.chars() {
         match c {
             '[' => output.push_str("%5B"),
             ']' => output.push_str("%5D"),
             '"' => output.push_str("%22"),
-            ',' => output.push_str("%2C"),
             ' ' => output.push_str("%20"),
             _ => output.push(c),
         }

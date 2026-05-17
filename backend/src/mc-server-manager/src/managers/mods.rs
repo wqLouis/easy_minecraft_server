@@ -32,6 +32,8 @@ fn resolve_mod_file(dir: &Path, filename: &str) -> Option<PathBuf> {
     None
 }
 
+use std::collections::HashMap;
+
 use crate::error::Error;
 use crate::world as wm;
 
@@ -42,7 +44,7 @@ use super::server::ManagedServer;
 // ---------------------------------------------------------------------------
 
 /// Information about a single mod or plugin file.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ModInfo {
     pub filename: String,
     pub name: String,
@@ -50,6 +52,8 @@ pub struct ModInfo {
     pub size_bytes: u64,
     pub size_human: String,
     pub last_modified: String,
+    /// The original download URL, if known. Persisted in manifest.json.
+    pub download_url: Option<String>,
 }
 
 /// Information about a generated `.mrpack` modpack archive.
@@ -85,12 +89,40 @@ impl ManagedServer {
         }
     }
 
+    // ── Download-URL manifest ───────────────────────────────────
+
+    /// Path to the manifest JSON that tracks original download URLs.
+    fn mods_manifest_path(&self) -> PathBuf {
+        self.mods_dir().join("manifest.json")
+    }
+
+    /// Read the download-url manifest, returning a map of filename → url.
+    fn read_mods_manifest(&self) -> HashMap<String, String> {
+        let path = self.mods_manifest_path();
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<HashMap<String, String>>(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Write the download-url manifest.
+    fn write_mods_manifest(&self, manifest: &HashMap<String, String>) -> Result<(), Error> {
+        let path = self.mods_manifest_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::other(e.to_string()))?;
+        }
+        let data = serde_json::to_string_pretty(manifest)
+            .map_err(|e| Error::other(e.to_string()))?;
+        std::fs::write(&path, data).map_err(|e| Error::other(e.to_string()))
+    }
+
     /// List all mod/plugin files in the server's mods/plugins directory.
     pub fn list_mods(&self) -> Result<Vec<ModInfo>, Error> {
         let dir = self.mods_dir();
         if !dir.is_dir() {
             return Ok(vec![]);
         }
+        let manifest = self.read_mods_manifest();
         let mut items: Vec<ModInfo> = std::fs::read_dir(&dir)
             .map_err(|e| Error::other(e.to_string()))?
             .filter_map(|e| e.ok())
@@ -106,6 +138,9 @@ impl ManagedServer {
                     .or_else(|| fn_.strip_suffix(".jar.disabled"))
                     .unwrap_or(&fn_)
                     .to_string();
+                // Strip .disabled suffix when looking up the manifest
+                let manifest_key = fn_.strip_suffix(".disabled").unwrap_or(&fn_).to_string();
+                let download_url = manifest.get(&manifest_key).cloned();
                 let meta = e.metadata().ok();
                 ModInfo {
                     filename: fn_,
@@ -122,6 +157,7 @@ impl ManagedServer {
                             dt.to_rfc3339()
                         })
                         .unwrap_or_default(),
+                    download_url,
                 }
             })
             .collect();
@@ -137,6 +173,10 @@ impl ManagedServer {
             .map_err(|e| Error::other(e.to_string()))?;
         let dest = dir.join(filename);
         mc_server_installer::download(url, &dest).await?;
+        // Persist the download URL in the manifest
+        let mut manifest = self.read_mods_manifest();
+        manifest.insert(filename.to_string(), url.to_string());
+        self.write_mods_manifest(&manifest)?;
         let meta = tokio::fs::metadata(&dest)
             .await
             .map_err(|e| Error::other(e.to_string()))?;
@@ -157,6 +197,7 @@ impl ManagedServer {
                     dt.to_rfc3339()
                 })
                 .unwrap_or_default(),
+            download_url: Some(url.to_string()),
         })
     }
 
@@ -165,7 +206,14 @@ impl ManagedServer {
         let dir = self.mods_dir();
         let path = resolve_mod_file(&dir, filename)
             .ok_or_else(|| Error::other(format!("'{filename}' not found")))?;
-        std::fs::remove_file(&path).map_err(|e| Error::other(e.to_string()))
+        std::fs::remove_file(&path).map_err(|e| Error::other(e.to_string()))?;
+        // Clean up the manifest entry
+        let manifest_key = filename.strip_suffix(".disabled").unwrap_or(filename).to_string();
+        let mut manifest = self.read_mods_manifest();
+        if manifest.remove(&manifest_key).is_some() {
+            self.write_mods_manifest(&manifest)?;
+        }
+        Ok(())
     }
 
     /// Enable or disable a mod/plugin by renaming with/without `.disabled`.
@@ -192,6 +240,9 @@ impl ManagedServer {
             .strip_suffix(".jar")
             .unwrap_or(filename)
             .to_string();
+        // Preserve the download URL from the manifest
+        let manifest = self.read_mods_manifest();
+        let download_url = manifest.get(base).cloned();
         Ok(ModInfo {
             filename: dst,
             name,
@@ -206,6 +257,7 @@ impl ManagedServer {
                     dt.to_rfc3339()
                 })
                 .unwrap_or_default(),
+            download_url,
         })
     }
 
@@ -239,6 +291,11 @@ impl ManagedServer {
 
     /// Generate a Modrinth `.mrpack` modpack archive from the enabled
     /// mods (or a specific subset).
+    ///
+    /// Mods are listed in `files[]` with their original download URLs
+    /// so that launchers can download them directly. No mod jars are
+    /// embedded in the zip — the mrpack is a lightweight metadata
+    /// archive that references external download sources.
     pub fn generate_modpack(
         &self,
         name: &str,
@@ -246,6 +303,8 @@ impl ManagedServer {
         include: &[String],
     ) -> Result<ModpackInfo, Error> {
         use std::io::Write;
+        use sha2::Digest;
+
         let mods = self.list_mods()?;
         let dir = self.mods_dir();
         let selected: Vec<&ModInfo> = if include.is_empty() {
@@ -258,19 +317,49 @@ impl ManagedServer {
         if selected.is_empty() {
             return Err(Error::other("No mods selected"));
         }
+
+        // Every selected mod must have a tracked download URL, otherwise
+        // launchers won't be able to download the file and the pack will
+        // be broken.  Mods installed before the manifest system (v0.2+)
+        // need to be reinstalled to register their URL.
+        let missing_urls: Vec<&&ModInfo> = selected.iter().filter(|m| m.download_url.is_none()).collect();
+        if !missing_urls.is_empty() {
+            let names: Vec<&str> = missing_urls.iter().map(|m| m.filename.as_str()).collect();
+            return Err(Error::other(format!(
+                "Missing download URLs for mods: {}. Reinstall them to register their URLs.",
+                names.join(", ")
+            )));
+        }
         let mt = if self.mod_type() == "mod" {
             "mods"
         } else {
             "plugins"
         };
-        use sha2::Digest;
+
+        // Build files[] entries with download URLs, hashes, and file size
         let files: Vec<serde_json::Value> = selected
             .iter()
             .map(|m| {
                 let data = std::fs::read(dir.join(&m.filename)).unwrap_or_default();
-                serde_json::json!({"path": format!("{}/{}", mt, m.filename), "downloads": [], "hashes": {"sha1": sha1_smol::Sha1::from(&data).digest().to_string(), "sha512": format!("{:x}", sha2::Sha512::digest(&data))}, "fileSize": data.len() as u64})
+                let path = format!("{}/{}", mt, m.filename);
+                let downloads: Vec<String> = m
+                    .download_url
+                    .as_ref()
+                    .map(|u| vec![u.clone()])
+                    .unwrap_or_default();
+                serde_json::json!({
+                    "path": path,
+                    "downloads": downloads,
+                    "hashes": {
+                        "sha1": sha1_smol::Sha1::from(&data).digest().to_string(),
+                        "sha512": format!("{:x}", sha2::Sha512::digest(&data)),
+                    },
+                    "fileSize": data.len() as u64,
+                })
             })
             .collect();
+
+        // Dependencies: minecraft version + optional loader
         let mut deps = serde_json::json!({"minecraft": self.version});
         if let Some(k) = match self.provider.to_lowercase().as_str() {
             "fabric" => Some("fabric-loader"),
@@ -280,9 +369,19 @@ impl ManagedServer {
             _ => None,
         } {
             deps.as_object_mut()
-                .map(|o| o.insert(k.to_string(), serde_json::Value::String("0.0.0".into())));
+                .map(|o| o.insert(k.to_string(), serde_json::Value::String("*".into())));
         }
-        let idx = serde_json::json!({"formatVersion": 1, "game": "minecraft", "versionId": version, "name": name, "summary": format!("Server modpack for {} {}", self.provider, self.version), "files": files, "dependencies": deps});
+
+        let idx = serde_json::json!({
+            "formatVersion": 1,
+            "game": "minecraft",
+            "versionId": version,
+            "name": name,
+            "summary": format!("Server modpack for {} {}", self.provider, self.version),
+            "files": files,
+            "dependencies": deps,
+        });
+
         let out_dir = self.modpack_dir();
         std::fs::create_dir_all(&out_dir).map_err(|e| Error::other(e.to_string()))?;
         let safe = name.replace(' ', "-").to_lowercase();
@@ -292,6 +391,8 @@ impl ManagedServer {
         let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o644);
+
+        // Only modrinth.index.json goes in the zip — no overrides/
         zip.start_file("modrinth.index.json", opts)
             .map_err(|e| Error::other(e.to_string()))?;
         zip.write_all(
@@ -300,16 +401,7 @@ impl ManagedServer {
                 .as_bytes(),
         )
         .map_err(|e| Error::other(e.to_string()))?;
-        zip.add_directory(format!("overrides/{mt}"), opts)
-            .map_err(|e| Error::other(e.to_string()))?;
-        for m in &selected {
-            let data =
-                std::fs::read(dir.join(&m.filename)).map_err(|e| Error::other(e.to_string()))?;
-            zip.start_file(format!("overrides/{}/{}", mt, m.filename), opts)
-                .map_err(|e| Error::other(e.to_string()))?;
-            zip.write_all(&data)
-                .map_err(|e| Error::other(e.to_string()))?;
-        }
+
         zip.finish().map_err(|e| Error::other(e.to_string()))?;
         let size = std::fs::metadata(&op)
             .map_err(|e| Error::other(e.to_string()))?
