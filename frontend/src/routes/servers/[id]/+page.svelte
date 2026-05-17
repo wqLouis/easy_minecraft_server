@@ -3,7 +3,7 @@
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { toast } from "svelte-sonner";
-  import { ArrowLeftIcon, ServerIcon, PlayIcon, SquareIcon, RefreshCwIcon, UsersIcon, MemoryStickIcon, BoxIcon, DownloadIcon, TerminalIcon, GlobeIcon, Settings2Icon, PuzzleIcon, ExternalLinkIcon, TagIcon, FileArchiveIcon } from "@lucide/svelte";
+  import { ArrowLeftIcon, ServerIcon, PlayIcon, SquareIcon, RefreshCwIcon, UsersIcon, MemoryStickIcon, BoxIcon, DownloadIcon, TerminalIcon, GlobeIcon, Settings2Icon, PuzzleIcon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Separator } from "$lib/components/ui/separator/index.js";
@@ -190,49 +190,35 @@
         </div>
       </div>
 
-      <!-- Modpack — GitHub release style -->
-      <div class="rounded-lg border bg-card overflow-hidden">
-        {#if modpackExists}
-          <!-- GitHub release style -->
-          <div class="border-b bg-muted/20 px-4 py-3">
-            <div class="flex items-center gap-2">
-              <TagIcon class="size-4 text-muted-foreground" />
-              <span class="text-sm font-semibold">{id}</span>
-              <Badge variant="outline" class="text-[10px] font-mono">v1.0.0</Badge>
-            </div>
-          </div>
-          <div class="p-4">
-            <div class="flex items-start justify-between gap-4">
-              <div class="space-y-1">
-                <h3 class="text-sm font-semibold">Modpack for {cfg.name as string}</h3>
-                <p class="text-xs text-muted-foreground">Generated from installed mods/plugins</p>
-                <div class="flex items-center gap-3 pt-1 text-xs text-muted-foreground">
-                  <span class="flex items-center gap-1"><FileArchiveIcon class="size-3" /> {modpackSize || "—"}</span>
-                  <span class="flex items-center gap-1"><BoxIcon class="size-3" /> .mrpack</span>
-                </div>
-              </div>
-              <Button onclick={downloadModpack} disabled={modpackDl} size="sm">
-                {#if modpackDl}<RefreshCwIcon class="size-3.5 animate-spin" />{:else}<DownloadIcon class="size-3.5" />{/if}
-                {modpackDl ? "…" : "Download"}
-              </Button>
-            </div>
-          </div>
-        {:else}
-          <!-- No release yet -->
-          <div class="p-4">
+      <!-- Modpack -->
+      <div class="rounded-lg border bg-card p-4">
+        <div class="flex items-center justify-between gap-4">
+          <div>
             <div class="flex items-center gap-2 text-sm font-medium">
               <BoxIcon class="size-4 text-muted-foreground" />
               <span>Modpack</span>
             </div>
-            <p class="mt-1 text-xs text-muted-foreground">
-              Package your installed mods into a shareable <code>.mrpack</code> file.
-            </p>
-            <Button onclick={generateAndDownload} disabled={modpackGen} size="sm">
-              {#if modpackGen}<RefreshCwIcon class="size-3.5 animate-spin" />{:else}<DownloadIcon class="size-3.5" />{/if}
-              {modpackGen ? "Generating…" : "Generate Modpack"}
-            </Button>
+            <div class="mt-1 flex items-center gap-2">
+              <Badge variant="outline" class="text-[10px] font-mono">.mrpack</Badge>
+              {#if modpackSize}
+                <Badge variant="secondary" class="text-[10px]">{modpackSize}</Badge>
+              {/if}
+            </div>
           </div>
-        {/if}
+          <div class="shrink-0">
+            {#if modpackExists}
+              <Button onclick={downloadModpack} disabled={modpackDl} size="sm">
+                {#if modpackDl}<RefreshCwIcon class="size-3.5 animate-spin" />{:else}<DownloadIcon class="size-3.5" />{/if}
+                {modpackDl ? "…" : "Download"}
+              </Button>
+            {:else}
+              <Button onclick={generateAndDownload} disabled={modpackGen} size="sm">
+                {#if modpackGen}<RefreshCwIcon class="size-3.5 animate-spin" />{:else}<DownloadIcon class="size-3.5" />{/if}
+                {modpackGen ? "Generating…" : "Generate"}
+              </Button>
+            {/if}
+          </div>
+        </div>
       </div>
     </div>
 

@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { toast } from "svelte-sonner";
-  import { ServerIcon, PlusIcon, RefreshCwIcon, GlobeIcon, LogOutIcon, TriangleAlertIcon } from "@lucide/svelte";
+  import { ServerIcon, PlusIcon, RefreshCwIcon, GlobeIcon, LogOutIcon, TriangleAlertIcon, ArchiveIcon, ChevronDownIcon, RotateCcwIcon } from "@lucide/svelte";
   import { Button } from "$lib/components/ui/button/index.js";
   import * as Card from "$lib/components/ui/card/index.js";
   import ServerCard from "$lib/components/server-card.svelte";
@@ -16,6 +16,10 @@
   let servers = $state<MinecraftServer[]>([]);
   let loading = $state(true);
   let error = $state("");
+  let archived = $state<{ id: string; name: string; provider: string; version: string; archived_at: string; size_human: string }[]>([]);
+  let loadingArchived = $state(false);
+  let archivedOpen = $state(false);
+  let restoringId = $state<string | null>(null);
 
   const authed = $derived(isAuthenticated());
   const configured = $derived(isConfigured());
@@ -29,7 +33,10 @@
 
   async function loadServers() {
     loading = true; error = "";
-    try { servers = await getApi().get<MinecraftServer[]>("/api/instances") }
+    try {
+      servers = await getApi().get<MinecraftServer[]>("/api/instances");
+      loadArchived();
+    }
     catch (e: unknown) { error = e instanceof Error ? e.message : "Failed" }
     finally { loading = false }
   }
@@ -61,6 +68,26 @@
     } catch (e: unknown) { toast.error("Failed to delete", { description: e instanceof Error ? e.message : "" }) }
   }
   function viewServer(id: string) { goto(`/servers/${id}`) }
+  async function loadArchived() {
+    loadingArchived = true;
+    try {
+      const r = await getApi().get<{ id: string; name: string; provider: string; version: string; archived_at: string; size_human: string }[]>("/api/instances/archived");
+      archived = r ?? [];
+    } catch { archived = []; }
+    finally { loadingArchived = false; }
+  }
+
+  async function restoreArchived(id: string) {
+    restoringId = id;
+    try {
+      await getApi().post(`/api/instances/archived/${id}/restore`);
+      toast.success(`"${archived.find((a) => a.id === id)?.name ?? id}" restored`);
+      archived = archived.filter((a) => a.id !== id);
+      loadServers();
+    } catch (e: unknown) { toast.error("Failed to restore", { description: e instanceof Error ? e.message : "" }) }
+    finally { restoringId = null; }
+  }
+
   function viewLogs(id: string) {
     const s = servers.find((s) => s.id === id);
     if (s) logViewerState.set({ open: true, serverId: id, serverName: s.name });
@@ -75,7 +102,7 @@
   const rCount = $derived(servers.filter((s) => s.running).length);
 </script>
 
-<div class="mx-auto flex flex-col px-6 py-6">
+<div class="mx-auto flex min-h-dvh flex-col px-6 py-6">
   {#if !configured}
     <div class="flex flex-1 items-center justify-center" style="min-height: calc(100dvh - 3rem)">
       <Card.Root size="sm" class="w-full max-w-md">
@@ -109,7 +136,7 @@
       </div>
     </div>
 
-    <div class="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-2">
+    <div class="mb-6 grid shrink-0 grid-cols-2 gap-3 sm:grid-cols-2">
       <Card.Root size="sm" class="py-3"><Card.Content class="text-center"><p class="text-2xl font-bold">{servers.length}</p><p class="text-xs text-muted-foreground">Total</p></Card.Content></Card.Root>
       <Card.Root size="sm" class="border-green-200 py-3 dark:border-green-900"><Card.Content class="text-center"><p class="text-2xl font-bold text-green-600 dark:text-green-400">{rCount}</p><p class="text-xs text-muted-foreground">Running</p></Card.Content></Card.Root>
     </div>
@@ -124,19 +151,69 @@
       </div>
     {/if}
 
-    {#if loading}
-      <div class="flex items-center justify-center py-20"><RefreshCwIcon class="size-8 animate-spin text-muted-foreground" /></div>
-    {:else if servers.length === 0}
-      <div class="flex flex-col items-center justify-center gap-4 py-20 text-center">
-        <ServerIcon class="size-12 text-muted-foreground" />
-        <div><h2 class="text-lg font-medium">No Servers Yet</h2><p class="mt-1 text-sm text-muted-foreground">Create your first server.</p></div>
-        <Button onclick={() => goto("/servers/new")}><PlusIcon class="size-4" /> Create Server</Button>
+    <div class="flex-1">
+      {#if loading}
+        <div class="flex items-center justify-center py-20"><RefreshCwIcon class="size-8 animate-spin text-muted-foreground" /></div>
+      {:else if servers.length === 0}
+        <div class="flex flex-col items-center justify-center gap-4 py-20 text-center">
+          <ServerIcon class="size-12 text-muted-foreground" />
+          <div><h2 class="text-lg font-medium">No Servers Yet</h2><p class="mt-1 text-sm text-muted-foreground">Create your first server.</p></div>
+          <Button onclick={() => goto("/servers/new")}><PlusIcon class="size-4" /> Create Server</Button>
+        </div>
+      {:else}
+        <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 auto-rows-fr">
+          {#each servers as server (server.id)}
+            <ServerCard {server} onStart={startServer} onStop={stopServer} onDelete={deleteServer} onViewLogs={viewLogs} onView={viewServer} />
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    <!-- Archived Servers -->
+    {#if archived.length > 0}
+      <div class="mt-10 border-t pt-6">
+        <button onclick={() => archivedOpen = !archivedOpen} class="flex w-full items-center justify-between gap-2 text-sm font-medium text-muted-foreground hover:text-foreground">
+          <div class="flex items-center gap-2">
+            <ArchiveIcon class="size-4" />
+            <span>Archived Servers</span>
+            <span class="text-xs text-muted-foreground">({archived.length})</span>
+          </div>
+          <ChevronDownIcon class="size-4 transition-transform {archivedOpen ? 'rotate-180' : ''}" />
+        </button>
+        {#if archivedOpen}
+          <div class="mt-4 space-y-2">
+            {#each archived as a}
+              <div class="flex items-center justify-between gap-4 rounded-lg border bg-card px-4 py-3 text-sm">
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="font-medium truncate">{a.name}</span>
+                    <span class="text-xs text-muted-foreground">({a.id})</span>
+                  </div>
+                  <div class="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
+                    <span>{a.provider} {a.version}</span>
+                    <span>{a.size_human}</span>
+                    <span>Archived {new Date(a.archived_at).toLocaleDateString()}</span>
+                  </div>
+                </div>
+                <Button size="sm" variant="outline" onclick={() => restoreArchived(a.id)} disabled={restoringId !== null} class="shrink-0">
+                  {#if restoringId === a.id}
+                    <RefreshCwIcon class="size-3.5 animate-spin" />
+                  {:else}
+                    <RotateCcwIcon class="size-3.5" />
+                  {/if}
+                  Restore
+                </Button>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
-    {:else}
-      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {#each servers as server (server.id)}
-          <ServerCard {server} onStart={startServer} onStop={stopServer} onDelete={deleteServer} onViewLogs={viewLogs} onView={viewServer} />
-        {/each}
+    {:else if !loading}
+      <div class="mt-10 border-t pt-6">
+        <div class="flex items-center gap-2 text-sm text-muted-foreground">
+          <ArchiveIcon class="size-4" />
+          <span>No archived servers</span>
+        </div>
       </div>
     {/if}
   {/if}
