@@ -82,9 +82,11 @@ pub mod world;
 pub use error::Error;
 pub use instance::{ServerConfig, ServerInstance};
 pub use log::LogManager;
-pub use manager::{ManagedServer, ServerHandle, ServerStatus, ModInfo, ModpackInfo};
+pub use manager::{ManagedServer, ModInfo, ModpackInfo, ServerHandle, ServerStatus};
 pub use player::{PlayerInfo, PlayerTracker};
 pub use properties::ServerProperties;
-pub use registry::{instance_config_schema, InstanceConfig, InstanceSummary, ServerRegistry, ArchivedSummary};
-pub use version::{fetch_latest, fetch_versions, list_providers, parse_provider, ProviderInfo};
-pub use world::{WorldInfo, BackupEntry, HistoryEntry, is_minecraft_world, human_size};
+pub use registry::{
+    ArchivedSummary, InstanceConfig, InstanceSummary, ServerRegistry, instance_config_schema,
+};
+pub use version::{ProviderInfo, fetch_latest, fetch_versions, list_providers, parse_provider};
+pub use world::{BackupEntry, HistoryEntry, WorldInfo, human_size, is_minecraft_world};

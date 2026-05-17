@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
-use crate::error::Error;
 use crate::VersionInfo;
+use crate::error::Error;
 
 #[derive(Deserialize)]
 struct GameVersions(Vec<GameEntry>);
@@ -55,12 +55,10 @@ pub async fn fetch_versions() -> Result<Vec<String>, Error> {
 /// to produce a `fabric-server-launch.jar`.
 pub async fn fetch_latest(mc_version: &str) -> Result<VersionInfo, Error> {
     // Get latest loader version for this MC version
-    let loaders: LoaderVersions = reqwest::get(format!(
-        "{META_BASE}/versions/loader/{mc_version}"
-    ))
-    .await?
-    .json()
-    .await?;
+    let loaders: LoaderVersions = reqwest::get(format!("{META_BASE}/versions/loader/{mc_version}"))
+        .await?
+        .json()
+        .await?;
 
     let loader = loaders
         .0

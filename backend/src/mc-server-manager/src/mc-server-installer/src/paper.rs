@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::error::Error;
 use crate::VersionInfo;
+use crate::error::Error;
 
 // ---------------------------------------------------------------------------
 // API response models (PaperMC API v2)
@@ -58,10 +58,7 @@ pub async fn fetch_versions() -> Result<Vec<String>, Error> {
 // ---------------------------------------------------------------------------
 
 /// Fetch the latest stable build for a PaperMC project at a given MC version.
-pub async fn fetch_project_latest(
-    project: &str,
-    mc_version: &str,
-) -> Result<VersionInfo, Error> {
+pub async fn fetch_project_latest(project: &str, mc_version: &str) -> Result<VersionInfo, Error> {
     let url = format!("{API_BASE}/projects/{project}/versions/{mc_version}/builds");
     let resp: BuildsResponse = reqwest::get(&url).await?.json().await?;
 
@@ -74,7 +71,10 @@ pub async fn fetch_project_latest(
         .ok_or_else(|| Error::NoStableBuild(project.into(), mc_version.into()))?;
 
     let download = build.downloads.get("application").ok_or_else(|| {
-        Error::NoVersion(project.into(), format!("{mc_version} build {}", build.build))
+        Error::NoVersion(
+            project.into(),
+            format!("{mc_version} build {}", build.build),
+        )
     })?;
 
     let download_url = format!(

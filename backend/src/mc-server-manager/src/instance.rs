@@ -164,9 +164,7 @@ impl ServerInstance {
 
     /// Send a command to the server console (e.g. `"say Hello"`, `"stop"`).
     pub fn send_command(&self, cmd: impl Into<String>) -> Result<(), Error> {
-        self.stdin_tx
-            .send(cmd.into())
-            .map_err(|_| Error::StdinSend)
+        self.stdin_tx.send(cmd.into()).map_err(|_| Error::StdinSend)
     }
 
     /// Gracefully stop the server by sending the `stop` command, then wait

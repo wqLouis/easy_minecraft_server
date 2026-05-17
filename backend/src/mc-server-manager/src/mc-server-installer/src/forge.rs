@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
-use crate::error::Error;
 use crate::VersionInfo;
+use crate::error::Error;
 
 #[derive(Deserialize)]
 struct PromosResponse {

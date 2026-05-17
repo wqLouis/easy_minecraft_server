@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
-use crate::error::Error;
 use crate::VersionInfo;
+use crate::error::Error;
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
@@ -53,8 +53,7 @@ struct JavaVersion {
     major_version: u32,
 }
 
-const MANIFEST_URL: &str =
-    "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
+const MANIFEST_URL: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 
 /// Fetch all available version IDs from Mojang's manifest.
 pub async fn fetch_versions() -> Result<Vec<String>, Error> {

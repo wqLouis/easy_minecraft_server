@@ -68,10 +68,7 @@ impl LogManager {
     pub fn tail(&self, n: usize) -> Vec<String> {
         let len = self.buffer.len();
         let start = len.saturating_sub(n);
-        self.buffer
-            .range(start..)
-            .cloned()
-            .collect()
+        self.buffer.range(start..).cloned().collect()
     }
 
     /// Return all buffered log lines (oldest first).

@@ -1,5 +1,5 @@
-use crate::error::Error;
 use crate::VersionInfo;
+use crate::error::Error;
 
 const MAVEN_BASE: &str = "https://maven.neoforged.net/releases/net/neoforged/neoforge";
 
@@ -27,9 +27,7 @@ pub async fn fetch_latest(mc_version: &str) -> Result<VersionInfo, Error> {
 
     // Parse HTML to find version links matching our MC version
     // NeoForge versions: <a href="21.4.0-beta/">21.4.0-beta/</a>
-    let mc_short = mc_version
-        .strip_prefix("1.")
-        .unwrap_or(mc_version);
+    let mc_short = mc_version.strip_prefix("1.").unwrap_or(mc_version);
 
     let matching_versions: Vec<String> = html
         .split("href=\"")
@@ -48,9 +46,7 @@ pub async fn fetch_latest(mc_version: &str) -> Result<VersionInfo, Error> {
         .last()
         .ok_or_else(|| Error::NoVersion("neoforge".into(), mc_version.into()))?;
 
-    let download_url = format!(
-        "{MAVEN_BASE}/{neo_ver}/neoforge-{neo_ver}-installer.jar"
-    );
+    let download_url = format!("{MAVEN_BASE}/{neo_ver}/neoforge-{neo_ver}-installer.jar");
 
     Ok(VersionInfo {
         name: format!("NeoForge {neo_ver}"),

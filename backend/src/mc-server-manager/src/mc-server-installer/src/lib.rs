@@ -15,13 +15,13 @@
 //! ```
 
 pub mod error;
-pub mod vanilla;
-pub mod paper;
-pub mod purpur;
 pub mod fabric;
 pub mod forge;
-pub mod neoforge;
 pub mod modrinth;
+pub mod neoforge;
+pub mod paper;
+pub mod purpur;
+pub mod vanilla;
 
 use std::path::{Path, PathBuf};
 
@@ -102,7 +102,7 @@ pub async fn fetch_versions(software: ServerSoftware) -> Result<Vec<String>, err
         ServerSoftware::Vanilla => vanilla::fetch_versions().await,
         ServerSoftware::Paper => paper::fetch_versions().await,
         ServerSoftware::Purpur => purpur::fetch_versions().await,
-        ServerSoftware::Spigot => Ok(vec![]),  // BuildTools — no version list
+        ServerSoftware::Spigot => Ok(vec![]), // BuildTools — no version list
         ServerSoftware::Fabric => fabric::fetch_versions().await,
         ServerSoftware::Forge => forge::fetch_versions().await,
         ServerSoftware::NeoForge => neoforge::fetch_versions().await,
@@ -135,10 +135,7 @@ pub async fn fetch_latest(
 /// Download a file from `url` to `destination`, returning the path.
 ///
 /// If `sha1` is provided, the download is verified after writing.
-pub async fn download(
-    url: &str,
-    destination: impl AsRef<Path>,
-) -> Result<PathBuf, error::Error> {
+pub async fn download(url: &str, destination: impl AsRef<Path>) -> Result<PathBuf, error::Error> {
     let dest = destination.as_ref().to_path_buf();
 
     // Ensure parent directory exists

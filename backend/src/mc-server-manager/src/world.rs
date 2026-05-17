@@ -180,7 +180,11 @@ pub fn extract_world_zip(data: &[u8], target_dir: &Path) -> Result<String, Error
             let entry = archive.by_index(i).ok()?;
             let name = entry.name().to_string();
             name.split('/').next().map(|s| {
-                if s.is_empty() { "world".to_string() } else { s.to_string() }
+                if s.is_empty() {
+                    "world".to_string()
+                } else {
+                    s.to_string()
+                }
             })
         })
         .unwrap_or_else(|| "world".to_string());

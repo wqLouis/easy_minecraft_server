@@ -127,18 +127,43 @@ pub async fn search(
 ) -> Result<Vec<ModrinthProject>, Error> {
     let mut facets: Vec<String> = Vec::new();
 
-    if let Some(pt) = project_type { facets.push(format!("[\"project_type:{pt}\"]")); }
-    if let Some(ls) = loaders { for l in ls { facets.push(format!("[\"categories:{l}\"]")); } }
-    if let Some(vs) = versions { for v in vs { facets.push(format!("[\"versions:{v}\"]")); } }
-    if let Some(cs) = client_side { facets.push(format!("[\"client_side:{cs}\"]")); }
-    if let Some(ss) = server_side { facets.push(format!("[\"server_side:{ss}\"]")); }
-    if let Some(os) = open_source { facets.push(format!("[\"open_source:{os}\"]")); }
+    if let Some(pt) = project_type {
+        facets.push(format!("[\"project_type:{pt}\"]"));
+    }
+    if let Some(ls) = loaders {
+        for l in ls {
+            facets.push(format!("[\"categories:{l}\"]"));
+        }
+    }
+    if let Some(vs) = versions {
+        for v in vs {
+            facets.push(format!("[\"versions:{v}\"]"));
+        }
+    }
+    if let Some(cs) = client_side {
+        facets.push(format!("[\"client_side:{cs}\"]"));
+    }
+    if let Some(ss) = server_side {
+        facets.push(format!("[\"server_side:{ss}\"]"));
+    }
+    if let Some(os) = open_source {
+        facets.push(format!("[\"open_source:{os}\"]"));
+    }
 
-    let facets_str = if facets.is_empty() { String::new() } else {
-        format!("&facets={}", urlencoding(&format!("[{}]", facets.join(","))))
+    let facets_str = if facets.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "&facets={}",
+            urlencoding(&format!("[{}]", facets.join(",")))
+        )
     };
     let idx = index.map(|i| format!("&index={i}")).unwrap_or_default();
-    let off = if offset > 0 { format!("&offset={offset}") } else { String::new() };
+    let off = if offset > 0 {
+        format!("&offset={offset}")
+    } else {
+        String::new()
+    };
     let url = format!("{API_BASE}/search?query={query}{facets_str}{idx}{off}&limit={limit}");
 
     let resp: SearchResponse = reqwest::get(&url).await?.json().await?;
