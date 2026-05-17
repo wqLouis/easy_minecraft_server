@@ -1,4 +1,6 @@
 /target
-/data
-/servers
+data
+servers
 .env
+
+server.log
