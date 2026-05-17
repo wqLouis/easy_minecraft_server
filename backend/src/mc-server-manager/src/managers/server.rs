@@ -373,4 +373,100 @@ impl ManagedServer {
         let _ = std::fs::create_dir_all(p.parent().unwrap());
         let _ = std::fs::write(&p, serde_json::to_string_pretty(&h).unwrap());
     }
+
+    /// Detect the actual loader version from the server's installed files.
+    ///
+    /// Returns `(dependency_key, version_string)` or `None` if unknown.
+    /// This is used by modpack generation to avoid wildcard/range strings
+    /// (like `"*"` or `">=0.0.0"`) that contain characters illegal in
+    /// Windows paths — some launchers (PCL) use the version string
+    /// literally when downloading the loader.
+    pub fn detect_loader_version(&self) -> Option<(String, String)> {
+        let sd = &self.config.server_dir;
+        match self.provider.to_lowercase().as_str() {
+            "fabric" => {
+                let key = "fabric-loader".to_string();
+                // Check libraries/net/fabricmc/fabric-loader/<version>/
+                let lib_dir = sd.join("libraries/net/fabricmc/fabric-loader");
+                if let Some(v) = Self::find_version_dir(&lib_dir) {
+                    return Some((key, v));
+                }
+                None
+            }
+            "forge" => {
+                let key = "forge".to_string();
+                // Forge dirs look like "1.20.1-47.1.0" — extract the part after the dash
+                let lib_dir = sd.join("libraries/net/minecraftforge/forge");
+                if lib_dir.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+                        // Find the directory with the most recent version
+                        let mut best: Option<String> = None;
+                        for e in entries.flatten() {
+                            if !e.path().is_dir() { continue; }
+                            let n = e.file_name().to_string_lossy().to_string();
+                            if let Some(ver) = n.split('-').nth(1) {
+                                if !ver.is_empty() {
+                                    match (&best, ver) {
+                                        (None, v) => best = Some(v.to_string()),
+                                        (Some(b), v) if v > b.as_str() => best = Some(v.to_string()),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(v) = best {
+                            return Some((key, v));
+                        }
+                    }
+                }
+                None
+            }
+            "neoforge" => {
+                let key = "neoforge".to_string();
+                let lib_dir = sd.join("libraries/net/neoforged/neoforge");
+                if let Some(v) = Self::find_version_dir(&lib_dir) {
+                    return Some((key, v));
+                }
+                None
+            }
+            "quilt" => {
+                let key = "quilt-loader".to_string();
+                let lib_dir = sd.join("libraries/org/quiltmc/quilt-loader");
+                if let Some(v) = Self::find_version_dir(&lib_dir) {
+                    return Some((key, v));
+                }
+                None
+            }
+            _ => None, // paper, purpur, vanilla — no separate loader
+        }
+    }
+
+    /// Scan a library directory for version-number subdirectories
+    /// (e.g. "libraries/net/fabricmc/fabric-loader/0.19.2/") and
+    /// return the latest version found.
+    fn find_version_dir(dir: &Path) -> Option<String> {
+        if !dir.is_dir() {
+            return None;
+        }
+        let entries = std::fs::read_dir(dir).ok()?;
+        let mut best: Option<String> = None;
+        for e in entries.flatten() {
+            if !e.path().is_dir() { continue; }
+            let n = e.file_name().to_string_lossy().to_string();
+            // Version directories look like "0.19.2" — numeric with dots only
+            if !n.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                continue;
+            }
+            // Skip "." and ".." just in case
+            if n == "." || n == ".." { continue; }
+            match &best {
+                None => best = Some(n),
+                Some(b) => {
+                    // Compare version strings: if n > b (later version), use n
+                    if n > *b { best = Some(n); }
+                }
+            }
+        }
+        best
+    }
 }

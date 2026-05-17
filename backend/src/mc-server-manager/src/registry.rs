@@ -8,57 +8,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-/// Try to detect the server provider from a directory name or files inside.
-fn detect_provider(dir: &Path) -> Option<String> {
-    let name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    if dir.join(".fabric").is_dir() {
-        return Some("fabric".into());
-    }
-    if dir.join("fabric-server-launch.jar").exists() {
-        return Some("fabric".into());
-    }
-    if name.contains("fabric") {
-        return Some("fabric".into());
-    }
-    if name.contains("forge") || name.contains("neoforge") {
-        return Some("forge".into());
-    }
-    if name.contains("paper") {
-        return Some("paper".into());
-    }
-    if name.contains("purpur") {
-        return Some("purpur".into());
-    }
-    None
-}
-
-/// Try to detect the Minecraft version from a directory name
-/// (e.g. "fabric-1-20-1" → "1.20.1").
-fn detect_version_from_dir(dir: &Path) -> Option<String> {
-    let name = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    let separators: &[char] = &['.', '-', '_'];
-    let parts: Vec<&str> = name.split(separators).collect();
-    for i in 0..parts.len().saturating_sub(2) {
-        if let (Ok(major), Ok(minor)) = (parts[i].parse::<u32>(), parts[i + 1].parse::<u32>()) {
-            if major <= 3 {
-                let patch = parts
-                    .get(i + 2)
-                    .and_then(|p| p.parse::<u32>().ok())
-                    .map(|p| format!(".{p}"))
-                    .unwrap_or_default();
-                return Some(format!("{major}.{minor}{patch}"));
-            }
-        }
-    }
-    None
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InstanceConfig {
     pub id: String,
@@ -91,34 +40,27 @@ pub struct ArchivedSummary {
     pub size_human: String,
 }
 
+/// Name of the per-instance config file stored inside each server directory.
+pub const INSTANCE_CONFIG_FILE: &str = ".instance.json";
+
 #[derive(Clone)]
 pub struct ServerRegistry {
     instances: Arc<RwLock<HashMap<String, ManagedServer>>>,
     archive_root: PathBuf,
-    /// Whether the registry was loaded from disk (vs empty).
-    pub loaded: bool,
 }
 
-/// Name of the per-instance config file stored inside each server directory.
-pub const INSTANCE_CONFIG_FILE: &str = ".instance.json";
-
 impl ServerRegistry {
-    /// Create a new registry, scanning `servers_dir` for existing instances.
-    ///
-    /// Each subdirectory containing a `.instance.json` file is loaded as an
-    /// instance. Subdirectories without a config file are ignored (they can
-    /// be imported later via [`import_servers_dir`](Self::import_servers_dir)).
+    /// Create a new empty registry.
     pub fn new(archive_root: PathBuf) -> Self {
         Self {
             instances: Arc::new(RwLock::new(HashMap::new())),
             archive_root,
-            loaded: false,
         }
     }
 
-    /// Load all instances by scanning `servers_dir` for `.instance.json` files.
-    /// Returns the number of instances loaded.
-    pub fn load_all(&self, servers_dir: &Path) -> Result<usize, Error> {
+    /// Scan `servers_dir` for subdirectories containing `.instance.json`
+    /// and load each one as an instance. Returns the number loaded.
+    pub fn load_from(&self, servers_dir: &Path) -> Result<usize, Error> {
         let mut count = 0;
         if !servers_dir.is_dir() {
             return Ok(0);
@@ -145,63 +87,6 @@ impl ServerRegistry {
             count += 1;
         }
         Ok(count)
-    }
-
-    /// Scan `servers_dir` for subdirectories that do NOT have a `.instance.json`
-    /// yet, auto-detect their provider/version, and register them.
-    pub fn import_servers_dir(&self, servers_dir: &Path) -> Result<usize, Error> {
-        let mut imported = 0;
-        if !servers_dir.is_dir() {
-            return Ok(0);
-        }
-        let existing: Vec<String> = self
-            .instances
-            .read()
-            .map_err(|e| Error::other(e.to_string()))?
-            .keys()
-            .cloned()
-            .collect();
-        for entry in std::fs::read_dir(servers_dir).map_err(|e| Error::other(e.to_string()))? {
-            let entry = entry.map_err(|e| Error::other(e.to_string()))?;
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let id = entry.file_name().to_string_lossy().to_string();
-            if existing.contains(&id) {
-                continue;
-            }
-            // Skip if it already has a config file (would have been loaded by load_all)
-            if path.join(INSTANCE_CONFIG_FILE).is_file() {
-                continue;
-            }
-            let server_dir = path.to_string_lossy().to_string();
-            let jar_path = path.join("server.jar").to_string_lossy().to_string();
-            let provider = detect_provider(&path).unwrap_or_else(|| "vanilla".into());
-            let version = detect_version_from_dir(&path).unwrap_or_else(|| "unknown".into());
-            let cfg = InstanceConfig {
-                id: id.clone(),
-                name: id.clone(),
-                provider,
-                version,
-                java_path: String::new(),
-                min_memory: "1G".into(),
-                max_memory: "4G".into(),
-                jvm_args: vec![],
-                server_dir,
-                jar_path,
-            };
-            let mut m = self
-                .instances
-                .write()
-                .map_err(|e| Error::other(e.to_string()))?;
-            m.insert(id.clone(), cfg.to_managed());
-            drop(m);
-            self.save_one(&cfg)?;
-            imported += 1;
-            log::info!("Imported existing server '{}' from {}", id, path.display());
-        }
-        Ok(imported)
     }
 
     pub fn create(&self, config: InstanceConfig) -> Result<(), Error> {
@@ -388,7 +273,6 @@ impl ServerRegistry {
                 .map_err(|e| Error::other(e.to_string()))?;
             m.insert(id.to_string(), server);
         }
-        // Save config after start (no config change, but keep .instance.json fresh)
         if let Some((cfg, _)) = self.get_info(id) {
             self.save_one(&cfg)?;
         }

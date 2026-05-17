@@ -378,20 +378,15 @@ impl ManagedServer {
             })
             .collect();
 
-        // Dependencies: minecraft version + optional loader
-        // Use ">=0.0.0" instead of "*" because the asterisk character is
-        // illegal in Windows paths and some launchers (e.g. PCL) try to
-        // use the version string literally in file paths.
+        // Dependencies: minecraft version + optional loader with a real version.
+        // We detect the actual loader version from the server's installed files
+        // rather than using wildcards/range strings that contain characters illegal
+        // in Windows paths (e.g. "*", ">", "=") — some launchers (PCL) use the
+        // version string literally in file paths.
         let mut deps = serde_json::json!({"minecraft": self.version});
-        if let Some(k) = match self.provider.to_lowercase().as_str() {
-            "fabric" => Some("fabric-loader"),
-            "forge" => Some("forge"),
-            "neoforge" => Some("neoforge"),
-            "quilt" => Some("quilt-loader"),
-            _ => None,
-        } {
+        if let Some((key, version)) = self.detect_loader_version() {
             deps.as_object_mut()
-                .map(|o| o.insert(k.to_string(), serde_json::Value::String(">=0.0.0".into())));
+                .map(|o| o.insert(key, serde_json::Value::String(version)));
         }
 
         let idx = serde_json::json!({

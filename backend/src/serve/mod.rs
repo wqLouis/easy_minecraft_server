@@ -96,7 +96,7 @@ pub async fn serve(
         .map(|p| p.join("_archived"))
         .unwrap_or_else(|| PathBuf::from("./data/_archived"));
     let registry = ServerRegistry::new(archive_root);
-    // Load instances from per-server .instance.json files
+    // Scan servers dir for .instance.json files and load them
     {
         let sd = settings
             .read()
@@ -104,15 +104,9 @@ pub async fn serve(
             .servers_dir
             .clone();
         let servers_path = PathBuf::from(&sd);
-        match registry.load_all(&servers_path) {
+        match registry.load_from(&servers_path) {
             Ok(n) => log::info!("Loaded {} instance(s) from {}", n, sd),
             Err(e) => log::warn!("Failed to load instances: {e}"),
-        }
-        // Import any existing server directories that don't have .instance.json yet
-        match registry.import_servers_dir(&servers_path) {
-            Ok(n) if n > 0 => log::info!("Imported {} existing server(s) from {}", n, sd),
-            Ok(_) => {}
-            Err(e) => log::warn!("Failed to scan servers dir: {e}"),
         }
     }
     let sr = registry.clone();
