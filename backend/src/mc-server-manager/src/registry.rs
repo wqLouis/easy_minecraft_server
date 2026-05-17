@@ -8,6 +8,57 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+/// Try to detect the server provider from a directory name or files inside.
+fn detect_provider(dir: &Path) -> Option<String> {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if dir.join(".fabric").is_dir() {
+        return Some("fabric".into());
+    }
+    if dir.join("fabric-server-launch.jar").exists() {
+        return Some("fabric".into());
+    }
+    if name.contains("fabric") {
+        return Some("fabric".into());
+    }
+    if name.contains("forge") || name.contains("neoforge") {
+        return Some("forge".into());
+    }
+    if name.contains("paper") {
+        return Some("paper".into());
+    }
+    if name.contains("purpur") {
+        return Some("purpur".into());
+    }
+    None
+}
+
+/// Try to detect the Minecraft version from a directory name
+/// (e.g. "fabric-1-20-1" → "1.20.1").
+fn detect_version_from_dir(dir: &Path) -> Option<String> {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let separators: &[char] = &['.', '-', '_'];
+    let parts: Vec<&str> = name.split(separators).collect();
+    for i in 0..parts.len().saturating_sub(2) {
+        if let (Ok(major), Ok(minor)) = (parts[i].parse::<u32>(), parts[i + 1].parse::<u32>()) {
+            if major <= 3 {
+                let patch = parts
+                    .get(i + 2)
+                    .and_then(|p| p.parse::<u32>().ok())
+                    .map(|p| format!(".{p}"))
+                    .unwrap_or_default();
+                return Some(format!("{major}.{minor}{patch}"));
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct InstanceConfig {
     pub id: String,
@@ -39,38 +90,120 @@ pub struct ArchivedSummary {
     pub size_bytes: u64,
     pub size_human: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Saved {
-    instances: Vec<InstanceConfig>,
-}
 
 #[derive(Clone)]
 pub struct ServerRegistry {
     instances: Arc<RwLock<HashMap<String, ManagedServer>>>,
-    config_path: PathBuf,
     archive_root: PathBuf,
+    /// Whether the registry was loaded from disk (vs empty).
+    pub loaded: bool,
 }
 
+/// Name of the per-instance config file stored inside each server directory.
+pub const INSTANCE_CONFIG_FILE: &str = ".instance.json";
+
 impl ServerRegistry {
-    pub fn new(config_path: PathBuf) -> Self {
-        let instances = Arc::new(RwLock::new(HashMap::new()));
-        let ar = config_path
-            .parent()
-            .map(|p| p.join("_archived"))
-            .unwrap_or_else(|| PathBuf::from("./data/_archived"));
-        let r = Self {
-            instances: instances.clone(),
-            config_path,
-            archive_root: ar,
-        };
-        if let Ok(s) = r.load() {
-            let mut m = instances.write().unwrap();
-            for c in s.instances {
-                m.insert(c.id.clone(), c.to_managed());
-            }
+    /// Create a new registry, scanning `servers_dir` for existing instances.
+    ///
+    /// Each subdirectory containing a `.instance.json` file is loaded as an
+    /// instance. Subdirectories without a config file are ignored (they can
+    /// be imported later via [`import_servers_dir`](Self::import_servers_dir)).
+    pub fn new(archive_root: PathBuf) -> Self {
+        Self {
+            instances: Arc::new(RwLock::new(HashMap::new())),
+            archive_root,
+            loaded: false,
         }
-        r
     }
+
+    /// Load all instances by scanning `servers_dir` for `.instance.json` files.
+    /// Returns the number of instances loaded.
+    pub fn load_all(&self, servers_dir: &Path) -> Result<usize, Error> {
+        let mut count = 0;
+        if !servers_dir.is_dir() {
+            return Ok(0);
+        }
+        for entry in std::fs::read_dir(servers_dir).map_err(|e| Error::other(e.to_string()))? {
+            let entry = entry.map_err(|e| Error::other(e.to_string()))?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let cfg_path = path.join(INSTANCE_CONFIG_FILE);
+            if !cfg_path.is_file() {
+                continue;
+            }
+            let data =
+                std::fs::read_to_string(&cfg_path).map_err(|e| Error::other(e.to_string()))?;
+            let cfg: InstanceConfig =
+                serde_json::from_str(&data).map_err(|e| Error::other(e.to_string()))?;
+            let mut m = self
+                .instances
+                .write()
+                .map_err(|e| Error::other(e.to_string()))?;
+            m.insert(cfg.id.clone(), cfg.to_managed());
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Scan `servers_dir` for subdirectories that do NOT have a `.instance.json`
+    /// yet, auto-detect their provider/version, and register them.
+    pub fn import_servers_dir(&self, servers_dir: &Path) -> Result<usize, Error> {
+        let mut imported = 0;
+        if !servers_dir.is_dir() {
+            return Ok(0);
+        }
+        let existing: Vec<String> = self
+            .instances
+            .read()
+            .map_err(|e| Error::other(e.to_string()))?
+            .keys()
+            .cloned()
+            .collect();
+        for entry in std::fs::read_dir(servers_dir).map_err(|e| Error::other(e.to_string()))? {
+            let entry = entry.map_err(|e| Error::other(e.to_string()))?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().to_string();
+            if existing.contains(&id) {
+                continue;
+            }
+            // Skip if it already has a config file (would have been loaded by load_all)
+            if path.join(INSTANCE_CONFIG_FILE).is_file() {
+                continue;
+            }
+            let server_dir = path.to_string_lossy().to_string();
+            let jar_path = path.join("server.jar").to_string_lossy().to_string();
+            let provider = detect_provider(&path).unwrap_or_else(|| "vanilla".into());
+            let version = detect_version_from_dir(&path).unwrap_or_else(|| "unknown".into());
+            let cfg = InstanceConfig {
+                id: id.clone(),
+                name: id.clone(),
+                provider,
+                version,
+                java_path: String::new(),
+                min_memory: "1G".into(),
+                max_memory: "4G".into(),
+                jvm_args: vec![],
+                server_dir,
+                jar_path,
+            };
+            let mut m = self
+                .instances
+                .write()
+                .map_err(|e| Error::other(e.to_string()))?;
+            m.insert(id.clone(), cfg.to_managed());
+            drop(m);
+            self.save_one(&cfg)?;
+            imported += 1;
+            log::info!("Imported existing server '{}' from {}", id, path.display());
+        }
+        Ok(imported)
+    }
+
     pub fn create(&self, config: InstanceConfig) -> Result<(), Error> {
         let s = config.to_managed();
         let mut m = self
@@ -82,7 +215,7 @@ impl ServerRegistry {
         }
         m.insert(config.id.clone(), s);
         drop(m);
-        self.save()
+        self.save_one(&config)
     }
     fn sanitize_id(id: &str) -> Result<(), Error> {
         if id.is_empty()
@@ -113,9 +246,12 @@ impl ServerRegistry {
         }
         if dst.exists() {
             if let Ok(c) = serde_json::to_string_pretty(&cfg) {
-                let _ = std::fs::write(dst.join(".instance.json"), c);
+                let _ = std::fs::write(dst.join(INSTANCE_CONFIG_FILE), c);
             }
         }
+        // Remove the old .instance.json from the original location
+        let old_cfg = PathBuf::from(&cfg.server_dir).join(INSTANCE_CONFIG_FILE);
+        let _ = std::fs::remove_file(&old_cfg);
         {
             let mut m = self
                 .instances
@@ -123,7 +259,6 @@ impl ServerRegistry {
                 .map_err(|e| Error::other(e.to_string()))?;
             m.remove(id);
         }
-        self.save()?;
         log::info!("Instance '{id}' archived");
         Ok(())
     }
@@ -137,9 +272,9 @@ impl ServerRegistry {
             return Err(Error::other(format!("'{id}' not found")));
         }
         m.remove(id);
-        m.insert(config.id, ns);
+        m.insert(config.id.clone(), ns);
         drop(m);
-        self.save()
+        self.save_one(&config)
     }
     pub fn list_archived(&self) -> Vec<ArchivedSummary> {
         let mut a = vec![];
@@ -153,7 +288,7 @@ impl ServerRegistry {
             }
             let id = e.file_name().to_string_lossy().to_string();
             let c: Option<InstanceConfig> =
-                std::fs::read_to_string(e.path().join(".instance.json"))
+                std::fs::read_to_string(e.path().join(INSTANCE_CONFIG_FILE))
                     .ok()
                     .and_then(|c| serde_json::from_str(&c).ok());
             let (n, p, v) = c
@@ -189,7 +324,7 @@ impl ServerRegistry {
             return Err(Error::other(format!("Archived '{id}' not found")));
         }
         let cfg: InstanceConfig = serde_json::from_str(
-            &std::fs::read_to_string(ad.join(".instance.json"))
+            &std::fs::read_to_string(ad.join(INSTANCE_CONFIG_FILE))
                 .map_err(|e| Error::other(e.to_string()))?,
         )
         .map_err(|e| Error::other(e.to_string()))?;
@@ -208,7 +343,7 @@ impl ServerRegistry {
                 .map_err(|e| Error::other(e.to_string()))?;
             m.insert(id.to_string(), cfg.to_managed());
         }
-        self.save()?;
+        self.save_one(&cfg)?;
         log::info!("Instance '{id}' restored");
         Ok(())
     }
@@ -253,7 +388,11 @@ impl ServerRegistry {
                 .map_err(|e| Error::other(e.to_string()))?;
             m.insert(id.to_string(), server);
         }
-        self.save()
+        // Save config after start (no config change, but keep .instance.json fresh)
+        if let Some((cfg, _)) = self.get_info(id) {
+            self.save_one(&cfg)?;
+        }
+        Ok(())
     }
     pub async fn stop(&self, id: &str) -> Result<(), Error> {
         self.get_server(id)?.stop().await
@@ -291,28 +430,15 @@ impl ServerRegistry {
     pub async fn send_command(&self, id: &str, cmd: &str) -> Result<(), Error> {
         self.get_server(id)?.send_command(cmd).await
     }
-    fn load(&self) -> Result<Saved, Error> {
-        match std::fs::read_to_string(&self.config_path) {
-            Ok(c) => serde_json::from_str(&c).map_err(|e| Error::other(format!("parse: {e}"))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Saved { instances: vec![] }),
-            Err(e) => Err(Error::other(format!("read: {e}"))),
-        }
-    }
-    fn save(&self) -> Result<(), Error> {
-        let configs: Vec<InstanceConfig> = self
-            .instances
-            .read()
-            .map_err(|e| Error::other(e.to_string()))?
-            .values()
-            .map(|s| InstanceConfig::from_managed(s))
-            .collect();
-        let c = serde_json::to_string_pretty(&Saved { instances: configs })
+
+    /// Save a single instance's config to its own server directory.
+    fn save_one(&self, cfg: &InstanceConfig) -> Result<(), Error> {
+        let dir = PathBuf::from(&cfg.server_dir);
+        std::fs::create_dir_all(&dir).map_err(|e| Error::other(e.to_string()))?;
+        let data = serde_json::to_string_pretty(cfg)
             .map_err(|e| Error::other(e.to_string()))?;
-        if let Some(p) = self.config_path.parent() {
-            std::fs::create_dir_all(p).map_err(|e| Error::other(e.to_string()))?;
-        }
-        std::fs::write(&self.config_path, c).map_err(|e| Error::other(e.to_string()))?;
-        Ok(())
+        std::fs::write(dir.join(INSTANCE_CONFIG_FILE), data)
+            .map_err(|e| Error::other(e.to_string()))
     }
 }
 

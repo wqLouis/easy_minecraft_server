@@ -305,6 +305,23 @@ impl ManagedServer {
         use std::io::Write;
         use sha2::Digest;
 
+        /// Replace characters that are illegal in Windows paths.
+        fn sanitize_filename(s: &str) -> String {
+            s.chars()
+                .map(|c| {
+                    if c == '\\' || c == '/' || c == ':' || c == '*'
+                        || c == '?' || c == '"' || c == '<' || c == '>'
+                        || c == '|'
+                        || (c as u32) < 32
+                    {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .collect()
+        }
+
         let mods = self.list_mods()?;
         let dir = self.mods_dir();
         let selected: Vec<&ModInfo> = if include.is_empty() {
@@ -341,7 +358,9 @@ impl ManagedServer {
             .iter()
             .map(|m| {
                 let data = std::fs::read(dir.join(&m.filename)).unwrap_or_default();
-                let path = format!("{}/{}", mt, m.filename);
+                // Sanitise the filename to remove Windows-illegal characters
+                let safe_filename = sanitize_filename(&m.filename);
+                let path = format!("{}/{}", mt, safe_filename);
                 let downloads: Vec<String> = m
                     .download_url
                     .as_ref()
@@ -360,6 +379,9 @@ impl ManagedServer {
             .collect();
 
         // Dependencies: minecraft version + optional loader
+        // Use ">=0.0.0" instead of "*" because the asterisk character is
+        // illegal in Windows paths and some launchers (e.g. PCL) try to
+        // use the version string literally in file paths.
         let mut deps = serde_json::json!({"minecraft": self.version});
         if let Some(k) = match self.provider.to_lowercase().as_str() {
             "fabric" => Some("fabric-loader"),
@@ -369,13 +391,13 @@ impl ManagedServer {
             _ => None,
         } {
             deps.as_object_mut()
-                .map(|o| o.insert(k.to_string(), serde_json::Value::String("*".into())));
+                .map(|o| o.insert(k.to_string(), serde_json::Value::String(">=0.0.0".into())));
         }
 
         let idx = serde_json::json!({
             "formatVersion": 1,
             "game": "minecraft",
-            "versionId": version,
+            "versionId": sanitize_filename(version),
             "name": name,
             "summary": format!("Server modpack for {} {}", self.provider, self.version),
             "files": files,
@@ -384,8 +406,9 @@ impl ManagedServer {
 
         let out_dir = self.modpack_dir();
         std::fs::create_dir_all(&out_dir).map_err(|e| Error::other(e.to_string()))?;
-        let safe = name.replace(' ', "-").to_lowercase();
-        let op = out_dir.join(format!("{}-{}-{}.mrpack", self.handle.id, safe, version));
+        let safe_name = sanitize_filename(name).replace(' ', "-").to_lowercase();
+        let safe_ver = sanitize_filename(version);
+        let op = out_dir.join(format!("{}-{}-{}.mrpack", self.handle.id, safe_name, safe_ver));
         let file = std::fs::File::create(&op).map_err(|e| Error::other(e.to_string()))?;
         let mut zip = zip::ZipWriter::new(file);
         let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()

@@ -91,11 +91,30 @@ pub async fn serve(
         .as_ref()
         .map(|r| r.data_dir.join("blacklist.json"))
         .unwrap_or(blacklist_path);
-    let ip = active_bp
+    let archive_root = active_bp
         .parent()
-        .map(|p| p.join("instances.json"))
-        .unwrap_or_else(|| PathBuf::from("./data/instances.json"));
-    let registry = ServerRegistry::new(ip);
+        .map(|p| p.join("_archived"))
+        .unwrap_or_else(|| PathBuf::from("./data/_archived"));
+    let registry = ServerRegistry::new(archive_root);
+    // Load instances from per-server .instance.json files
+    {
+        let sd = settings
+            .read()
+            .map_err(|e| format!("Settings lock: {e}"))?
+            .servers_dir
+            .clone();
+        let servers_path = PathBuf::from(&sd);
+        match registry.load_all(&servers_path) {
+            Ok(n) => log::info!("Loaded {} instance(s) from {}", n, sd),
+            Err(e) => log::warn!("Failed to load instances: {e}"),
+        }
+        // Import any existing server directories that don't have .instance.json yet
+        match registry.import_servers_dir(&servers_path) {
+            Ok(n) if n > 0 => log::info!("Imported {} existing server(s) from {}", n, sd),
+            Ok(_) => {}
+            Err(e) => log::warn!("Failed to scan servers dir: {e}"),
+        }
+    }
     let sr = registry.clone();
 
     if let Some(ref rd) = ramdisk {
