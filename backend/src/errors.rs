@@ -20,6 +20,12 @@ pub enum AppError {
     UsernameAlreadyExists,
     #[error("{0}")]
     Internal(String),
+    #[error("Request replay detected")]
+    ReplayDetected,
+    #[error("Request timestamp expired or missing")]
+    TimestampExpired,
+    #[error("API key has expired")]
+    ApiKeyExpired,
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 }
@@ -34,6 +40,9 @@ impl IntoResponse for AppError {
             Self::IpBanned => (StatusCode::FORBIDDEN, self.to_string()),
             Self::IpNotWhitelisted => (StatusCode::FORBIDDEN, self.to_string()),
             Self::UsernameAlreadyExists => (StatusCode::CONFLICT, self.to_string()),
+            Self::ReplayDetected => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
+            Self::TimestampExpired => (StatusCode::UNAUTHORIZED, self.to_string()),
+            Self::ApiKeyExpired => (StatusCode::UNAUTHORIZED, self.to_string()),
             Self::InvalidPath(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error".into()),
         };

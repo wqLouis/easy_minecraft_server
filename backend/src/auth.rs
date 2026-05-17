@@ -16,10 +16,11 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const W_TTL: i64 = 12 * 60 * 60;
+const REPLAY_WINDOW_SECS: i64 = 30; // ±30s timestamp tolerance
 
 #[derive(Clone)]
 pub struct AppState {
@@ -30,6 +31,8 @@ pub struct AppState {
     pub blacklist_path: PathBuf,
     pub server_registry: ServerRegistry,
     pub rate_limiter: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    /// Replay cache: user_id → (nonce → seen_at Instant)
+    pub replay_cache: Arc<Mutex<HashMap<String, HashMap<String, Instant>>>>,
 }
 impl AppState {
     pub fn get_server(&self, id: &str) -> Result<mc_server_manager::ManagedServer, AppError> {
@@ -40,7 +43,16 @@ impl AppState {
 }
 
 pub fn generate_token() -> String {
-    hex::encode(rand::thread_rng().r#gen::<[u8; 32]>())
+    const CHARSET: &[u8] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[]{}|;:,.<>?/~";
+    let mut rng = rand::thread_rng();
+    let len = rng.gen_range(40..=64);
+    (0..len)
+        .map(|_| {
+            let idx = rng.gen_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
 }
 fn hash_cred(token: &str, username: &str) -> Result<String, AppError> {
     Ok(Argon2::default()
@@ -57,6 +69,73 @@ fn verify_cred(token: &str, username: &str, hash: &str) -> Result<bool, AppError
             &PasswordHash::new(hash)?,
         )
         .is_ok())
+}
+
+/// Extract X-Timestamp (Unix epoch seconds) and X-Nonce from request headers.
+pub fn extract_replay_headers(headers: &axum::http::HeaderMap) -> Result<(i64, String), AppError> {
+    let ts_str = headers
+        .get("x-timestamp")
+        .ok_or(AppError::TimestampExpired)?
+        .to_str()
+        .map_err(|_| AppError::TimestampExpired)?
+        .trim();
+    let ts: i64 = ts_str.parse().map_err(|_| AppError::TimestampExpired)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    if (now - ts).abs() > REPLAY_WINDOW_SECS {
+        return Err(AppError::TimestampExpired);
+    }
+    let nonce = headers
+        .get("x-nonce")
+        .ok_or(AppError::ReplayDetected)?
+        .to_str()
+        .map_err(|_| AppError::ReplayDetected)?
+        .trim()
+        .to_string();
+    if nonce.is_empty() {
+        return Err(AppError::ReplayDetected);
+    }
+    Ok((ts, nonce))
+}
+
+/// Check the in-memory nonce cache to detect and prevent replay attacks.
+///
+/// 1. Prunes entries older than `REPLAY_WINDOW_SECS` from the user's cache.
+/// 2. If the nonce already exists → ReplayDetected.
+/// 3. Otherwise inserts the nonce and returns Ok.
+pub fn check_replay(
+    cache: &Arc<Mutex<HashMap<String, HashMap<String, Instant>>>>,
+    user_id: &str,
+    nonce: &str,
+) -> Result<(), AppError> {
+    let mut map = cache.lock().unwrap();
+    let user_cache = map.entry(user_id.to_string()).or_default();
+    // Prune old nonces for this user
+    let cutoff = Instant::now() - Duration::from_secs(REPLAY_WINDOW_SECS as u64);
+    user_cache.retain(|_, seen_at| *seen_at > cutoff);
+    if user_cache.contains_key(nonce) {
+        return Err(AppError::ReplayDetected);
+    }
+    user_cache.insert(nonce.to_string(), Instant::now());
+    Ok(())
+}
+
+/// Check whether the user's API key has expired.
+pub fn check_key_expiry(user: &User) -> Result<(), AppError> {
+    if let Some(ref expires_at) = user.api_key_expires_at {
+        if let Ok(exp_naive) =
+            chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S")
+        {
+            let exp_utc: chrono::DateTime<chrono::Utc> =
+                chrono::DateTime::from_naive_utc_and_offset(exp_naive, chrono::Utc);
+            if chrono::Utc::now() > exp_utc {
+                return Err(AppError::ApiKeyExpired);
+            }
+        }
+    }
+    Ok(())
 }
 
 // ── Handlers ──────────────────────────────────────────────────────
@@ -86,7 +165,10 @@ pub async fn register(
     let hash = hash_cred(&token, &username)?;
     let id = Uuid::new_v4().to_string();
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    sqlx::query("INSERT INTO users (id, username, api_key_hash, is_sudoer, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)").bind(&id).bind(&username).bind(&hash).bind(&now).bind(&now).execute(&s.db).await?;
+    // Normal users: infinite key (NULL = never expires)
+    sqlx::query("INSERT INTO users (id, username, api_key_hash, is_sudoer, created_at, updated_at, api_key_expires_at) VALUES (?, ?, ?, 0, ?, ?, NULL)")
+        .bind(&id).bind(&username).bind(&hash).bind(&now).bind(&now)
+        .execute(&s.db).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!(CreatedUserResponse {
@@ -96,9 +178,11 @@ pub async fn register(
                 api_key_hash: hash,
                 is_sudoer: false,
                 created_at: now.clone(),
-                updated_at: now
+                updated_at: now,
+                api_key_expires_at: None,
             }),
-            api_key: token
+            api_key: token,
+            api_key_expires_at: None,
         })),
     ))
 }
@@ -197,11 +281,11 @@ pub async fn resolve_user(db: &SqlitePool, username: &str, token: &str) -> Resul
         .fetch_optional(db)
         .await?
         .ok_or(AppError::ApiKeyNotFound)?;
-    if verify_cred(token, username, &user.api_key_hash)? {
-        Ok(user)
-    } else {
-        Err(AppError::ApiKeyNotFound)
+    if !verify_cred(token, username, &user.api_key_hash)? {
+        return Err(AppError::ApiKeyNotFound);
     }
+    check_key_expiry(&user)?;
+    Ok(user)
 }
 
 pub fn client_ip(req: &axum::http::Request<axum::body::Body>, trust_proxy: bool) -> Option<String> {

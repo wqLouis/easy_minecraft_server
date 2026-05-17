@@ -75,6 +75,9 @@ export class ApiClient {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const key = _keys[this.endpointId];
     if (key) headers["Authorization"] = `Bearer ${key}`;
+    // Replay defense: attach timestamp + unique nonce to every request
+    headers["X-Timestamp"] = Math.floor(Date.now() / 1000).toString();
+    headers["X-Nonce"] = crypto.randomUUID();
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers,

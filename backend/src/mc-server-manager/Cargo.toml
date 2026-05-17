@@ -18,4 +18,5 @@ schemars = { version = "1", features = ["chrono04"] }
 sha1 = "0.6"
 sha1_smol = "1"
 sha2 = "0.10"
+percent-encoding = "2"
 mc-server-installer = { path = "src/mc-server-installer" }

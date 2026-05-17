@@ -1,5 +1,8 @@
 //! Axum middleware — IP ban check, auth, sudo check, rate limiter.
-use crate::auth::{AppState, check_ip_whitelist, client_ip, extract_credentials, resolve_user};
+use crate::auth::{
+    AppState, check_ip_whitelist, check_replay, client_ip, extract_credentials,
+    extract_replay_headers, resolve_user,
+};
 use crate::errors::AppError;
 use crate::ip_ban;
 use crate::models::User;
@@ -71,6 +74,9 @@ pub async fn require_auth(
         record(&s, &req, tp);
         e
     })?;
+    // Replay defense: validate X-Timestamp + X-Nonce
+    let (_ts, nonce) = extract_replay_headers(req.headers())?;
+    check_replay(&s.replay_cache, &user.id, &nonce)?;
     if let Some(ip) = client_ip(&req, tp) {
         s.ip_ban.write().unwrap().clear_failures(&ip);
     }

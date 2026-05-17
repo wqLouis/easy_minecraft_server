@@ -33,6 +33,9 @@ pub enum Commands {
     CreateSudo {
         #[arg(short, long)]
         username: String,
+        /// Key expiry in days (default: 90, 0 = never expires)
+        #[arg(short = 'e', long, default_value = "90")]
+        expires: u64,
     },
     /// List all users.
     ListUsers,
@@ -83,7 +86,9 @@ pub async fn dispatch(
             )
             .await
         }
-        Commands::CreateSudo { username } => cmd::create_sudo(&pool, &username).await,
+        Commands::CreateSudo { username, expires } => {
+            cmd::create_sudo(&pool, &username, expires).await
+        }
         Commands::ListUsers => cmd::list_users(&pool).await,
         Commands::BanStatus => cmd::ban_status(&blacklist_path).await,
         Commands::Unban { ip } => cmd::unban(&blacklist_path, &ip).await,

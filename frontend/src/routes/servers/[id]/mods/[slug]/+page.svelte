@@ -17,22 +17,32 @@
   let installing = $state(false);
   let selectedMcVer = $state("");
   let selectedLoader = $state("");
+  let provider = $state("");
+  let mcVersion = $state("");
 
   const id = $derived($page.params.id);
   const slug = $derived($page.params.slug);
-  const prov = $derived(($page.params as Record<string, string>).provider ?? "");
 
   function getLoaderHints(): Set<string> {
-    if (prov === "fabric" || prov === "forge" || prov === "neofabric" || prov === "quilt") return new Set(["fabric", "forge", "neoforge", "quilt"]);
-    if (["paper", "purpur", "spigot", "waterfall", "velocity"].includes(prov)) return new Set(["paper", "purpur", "spigot", "waterfall", "velocity"]);
+    if (provider === "fabric" || provider === "forge" || provider === "neofabric" || provider === "quilt") return new Set(["fabric", "forge", "neoforge", "quilt"]);
+    if (["paper", "purpur", "spigot", "waterfall", "velocity"].includes(provider)) return new Set(["paper", "purpur", "spigot", "waterfall", "velocity"]);
     return new Set();
   }
   const loaderHints = $derived(getLoaderHints());
 
   onMount(async () => {
     if (!isConfigured() || !isAuthenticated()) { goto("/"); return; }
-    await Promise.all([fetchProject(), fetchVersions()]);
+    await Promise.all([fetchProject(), fetchVersions(), fetchProvider()]);
   });
+
+  async function fetchProvider() {
+    try {
+      const r = await getApi().get<{ config: Record<string, unknown> }>(`/api/instances/${id}`);
+      const cfg = r.config as Record<string, unknown>;
+      provider = (cfg.provider as string) ?? "";
+      mcVersion = (cfg.version as string) ?? "";
+    } catch { /* ignore */ }
+  }
 
   $effect(() => {
     filterVersions();
@@ -52,6 +62,23 @@
     } catch { toast.error("Failed to load versions"); }
     finally { loading = false; }
   }
+
+  // Auto-select server's MC version and loader once versions are loaded
+  $effect(() => {
+    if (!versions.length || !provider || !mcVersion) return;
+    if (!selectedMcVer) {
+      // Pick the server's MC version if available; otherwise the first version
+      if (uniqueMcVersions().includes(mcVersion)) {
+        selectedMcVer = mcVersion;
+      } else {
+        selectedMcVer = uniqueMcVersions()[0] ?? "";
+      }
+    }
+    if (!selectedLoader) {
+      const preferred = uniqueLoaders();
+      selectedLoader = preferred[0] ?? "";
+    }
+  });
 
   function filterVersions() {
     let v = versions;

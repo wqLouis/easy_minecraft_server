@@ -54,8 +54,10 @@ pub async fn serve(
             let s = settings.read().map_err(|e| format!("Settings lock: {e}"))?;
             PathBuf::from(s.servers_dir.clone())
         };
-        let rd = ram::RamDisk::setup(tmpfs_path.as_deref(), data_dir, &servers_dir)?;
+        // Close the database pool BEFORE copying files to tmpfs,
+        // so the DB files are in a clean, consistent state.
         pool.close().await;
+        let rd = ram::RamDisk::setup(tmpfs_path.as_deref(), data_dir, &servers_dir)?;
         let new_url = database_url.replacen(
             data_dir.to_string_lossy().as_ref(),
             rd.data_dir.to_string_lossy().as_ref(),
@@ -123,6 +125,7 @@ pub async fn serve(
         blacklist_path: active_bp,
         server_registry: registry,
         rate_limiter: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        replay_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
     log::info!("Loaded {} blacklisted IP(s)", loaded.len());
 
@@ -164,6 +167,8 @@ pub async fn serve(
                 .allow_headers([
                     HeaderName::from_static("content-type"),
                     HeaderName::from_static("authorization"),
+                    HeaderName::from_static("x-timestamp"),
+                    HeaderName::from_static("x-nonce"),
                 ]),
         )
         .with_state(state);

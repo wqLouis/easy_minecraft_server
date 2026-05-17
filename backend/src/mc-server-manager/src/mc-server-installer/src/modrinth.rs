@@ -80,12 +80,15 @@ struct ProjectResponse {
     description: String,
     project_type: String,
     downloads: u64,
+    #[serde(alias = "followers")]
     follows: u64,
     categories: Vec<String>,
     versions: Vec<String>,
+    #[serde(default)]
+    game_versions: Vec<String>,
     icon_url: Option<String>,
-    client_side: String,
-    server_side: String,
+    client_side: Option<String>,
+    server_side: Option<String>,
     color: Option<u32>,
     license: serde_json::Value,
 }
@@ -208,12 +211,12 @@ pub async fn get_project(project_slug: &str) -> Result<ModrinthProject, Error> {
         downloads: resp.downloads,
         follows: resp.follows,
         loaders: resp.categories,
-        game_versions: resp.versions,
         page_url: format!("https://modrinth.com/{}/{}", pt, slug),
         icon_url: resp.icon_url,
         latest_version_id: None,
-        client_side: Some(resp.client_side),
-        server_side: Some(resp.server_side),
+        game_versions: resp.game_versions,
+        client_side: resp.client_side,
+        server_side: resp.server_side,
         color: resp.color,
     })
 }

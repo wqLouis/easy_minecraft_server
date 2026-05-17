@@ -9,6 +9,7 @@ use axum::{
     response::Response as AxResponse,
 };
 use mc_server_manager::mc_server_installer::modrinth;
+use percent_encoding::percent_decode_str;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -99,7 +100,13 @@ pub async fn modrinth_download_url(
     let url = modrinth::get_download_url(&slug, &q.mc_version, &q.loader)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to get download URL: {e}")))?;
-    let filename = url.rsplit('/').next().unwrap_or("unknown.jar").to_string();
+    // URL-decode the filename from the download URL (Modrinth CDN may use
+    // percent-encoded characters like %2B for +)
+    let raw = url.rsplit('/').next().unwrap_or("unknown.jar");
+    let filename = percent_decode_str(raw)
+        .decode_utf8()
+        .unwrap_or(std::borrow::Cow::Borrowed(raw))
+        .to_string();
     Ok(Json(
         json!({"slug": slug, "download_url": url, "filename": filename, "mc_version": q.mc_version, "loader": q.loader}),
     ))
@@ -142,8 +149,14 @@ pub async fn install_mod(
         .server_registry
         .get_server(&id)
         .map_err(|e| AppError::Internal(format!("Instance not found: {e}")))?;
+    // URL-decode the filename so percent-encoded chars (e.g. %2B → +)
+    // are stored as the actual character on disk.
+    let decoded = percent_decode_str(&body.filename)
+        .decode_utf8()
+        .map(|c| c.to_string())
+        .unwrap_or(body.filename.clone());
     let m = server
-        .install_mod(&body.download_url, &body.filename)
+        .install_mod(&body.download_url, &decoded)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(

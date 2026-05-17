@@ -56,6 +56,134 @@ Version info response:
 | `/api/instances/{id}/command` | `POST` | Send a console command |
 | `/api/instances/{id}/logs?tail=N` | `GET` | Get recent log lines (default 100) |
 | `/api/instances/{id}/players` | `GET` | Get online players |
+| `/api/instances/{id}/logs/stream` | `GET` | SSE stream of live server logs |
+| `/api/instances/{id}/properties` | `GET` | Get all server.properties |
+| `/api/instances/{id}/properties` | `PUT` | Update server.properties |
+| `/api/instances/{id}/command/history` | `GET` | Get recent console command history |
+| `/api/instances/schema` | `GET` | Get JSON schema for instance config |
+| `/api/instances/archived` | `GET` | List archived (deleted) instances |
+| `/api/instances/archived/{id}/restore` | `POST` | Restore an archived instance |
+
+### World Management (Sudo)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/instances/{id}/worlds` | `GET` | List worlds in the server directory |
+| `/api/instances/{id}/worlds/backup` | `POST` | Backup selected worlds as a zip |
+| `/api/instances/{id}/worlds/upload` | `POST` | Upload a world zip to extract |
+| `/api/instances/{id}/worlds/{world_name}` | `DELETE` | Delete a world directory |
+| `/api/instances/{id}/worlds/{world_name}/download` | `GET` | Download a world as zip |
+| `/api/instances/{id}/worlds/reset` | `POST` | Reset all worlds to fresh state |
+| `/api/instances/{id}/backups` | `GET` | List available world backups |
+
+### Mods / Plugins (Sudo)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/modrinth/search` | `GET` | Search Modrinth for mods/plugins/datapacks |
+| `/api/modrinth/project/{slug}` | `GET` | Get project details from Modrinth |
+| `/api/modrinth/project/{slug}/versions` | `GET` | List versions for a Modrinth project |
+| `/api/modrinth/project/{slug}/download-url` | `GET` | Get direct download URL for a version |
+| `/api/instances/{id}/mods` | `GET` | List installed mods/plugins |
+| `/api/instances/{id}/mods/install` | `POST` | Install a mod/plugin from a direct URL |
+| `/api/instances/{id}/mods/{filename}` | `DELETE` | Delete a mod/plugin (server must be stopped) |
+| `/api/instances/{id}/mods/{filename}/toggle` | `PUT` | Enable or disable a mod/plugin |
+| `/api/instances/{id}/mods/modpack` | `POST` | Generate a Modrinth-format modpack (.mrpack) |
+| `/api/instances/{id}/mods/modpack/download` | `GET` | Download the generated modpack file |
+
+### Modrinth Search Query Parameters
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `query` | `string` | Search query (required) |
+| `type` | `string` | Project type filter (`mod`, `plugin`, `datapack`, `modpack`, `shader`) |
+| `loaders` | `string` | Comma-separated loader filter (e.g. `fabric,paper`) |
+| `versions` | `string` | Comma-separated MC version filter (e.g. `1.21.4,1.21.3`) |
+| `client_side` | `string` | Client-side support (`required`, `optional`, `unsupported`) |
+| `server_side` | `string` | Server-side support (`required`, `optional`, `unsupported`) |
+| `open_source` | `bool` | Filter by open source |
+| `index` | `string` | Sort order (`relevance`, `downloads`, `follows`, `newest`, `updated`) |
+| `offset` | `int` | Pagination offset |
+| `limit` | `int` | Max results (default 10, max 100) |
+
+### Modrinth Search Response
+
+```json
+{
+  "results": [
+    {
+      "slug": "essentialsx",
+      "title": "EssentialsX",
+      "description": "The essential plugin...",
+      "project_type": "plugin",
+      "downloads": 12345678,
+      "loaders": ["paper", "purpur", "spigot"],
+      "game_versions": ["1.21.4", "1.21.3"],
+      "page_url": "https://modrinth.com/plugin/essentialsx",
+      "icon_url": "https://cdn.modrinth.com/..."
+    }
+  ],
+  "total_hits": 42
+}
+```
+
+### Install Mod Request / Response
+
+**Request:** `POST /api/instances/{id}/mods/install`
+```json
+{
+  "download_url": "https://cdn.modrinth.com/.../essentialx.jar",
+  "filename": "essentialsx.jar"
+}
+```
+
+**Response:**
+```json
+{
+  "installed": true,
+  "id": "my-server",
+  "filename": "essentialsx.jar",
+  "path": "./servers/my-server/plugins/essentialsx.jar",
+  "size_bytes": 123456
+}
+```
+
+### Mod Toggle Request / Response
+
+**Request:** `PUT /api/instances/{id}/mods/{filename}/toggle`
+```json
+{
+  "enabled": false
+}
+```
+
+Disabling renames `{filename}` to `{filename}.jar.disabled`. Enabling does the reverse. No download needed.
+
+### Generate Modpack Request / Response
+
+**Request:** `POST /api/instances/{id}/mods/modpack`
+```json
+{
+  "name": "My Modpack",
+  "version": "1.0.0",
+  "include": ["essentialsx.jar", "luckperms.jar"]
+}
+```
+
+`include` is optional — defaults to all enabled mods.
+
+**Response:**
+```json
+{
+  "generated": true,
+  "id": "my-server",
+  "name": "My Modpack",
+  "version": "1.0.0",
+  "modpack_file": "./data/modpacks/my-server/my-modpack-1.0.0.mrpack",
+  "size_bytes": 654321,
+  "include_count": 2
+}
+```
 
 ### Instance Config (POST / PUT body)
 
@@ -106,6 +234,9 @@ Version info response:
 | `fail2ban_max_attempts` | `5` | Max failed auth attempts before IP blacklist |
 | `servers_dir` | `"./servers"` | Default directory for new server instances |
 | `java_path` | `"/usr/bin/java"` | Default Java executable path |
+| `fail2ban_enabled` | `true` | Enable/disable fail2ban IP blacklist |
+| `ip_whitelist_enabled` | `false` | Enable/disable IP whitelist enforcement |
+| `auto_stop_timeout_minutes` | `30` | Auto-stop idle servers after N minutes (0 = disabled) |
 
 ## Data Files
 

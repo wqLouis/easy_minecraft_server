@@ -10,6 +10,7 @@ pub struct User {
     pub is_sudoer: bool,
     pub created_at: String,
     pub updated_at: String,
+    pub api_key_expires_at: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct IpWhitelistEntry {
@@ -43,6 +44,7 @@ pub struct MeResponse {
 pub struct CreatedUserResponse {
     pub user: UserResponse,
     pub api_key: String,
+    pub api_key_expires_at: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {

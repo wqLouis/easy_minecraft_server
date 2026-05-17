@@ -8,7 +8,7 @@ use crate::ip_ban;
 use crate::models::{IpWhitelistEntry, User};
 use crate::settings;
 
-pub async fn create_sudo(pool: &SqlitePool, username: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn create_sudo(pool: &SqlitePool, username: &str, expires_days: u64) -> Result<(), Box<dyn std::error::Error>> {
     let username = username.trim().to_lowercase();
     if username.is_empty() || username.len() < 2 { eprintln!("error: username must be at least 2 characters"); std::process::exit(1); }
     let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE username = ?").bind(&username).fetch_one(pool).await?;
@@ -20,9 +20,18 @@ pub async fn create_sudo(pool: &SqlitePool, username: &str) -> Result<(), Box<dy
     let argon2 = Argon2::default();
     let credential_hash = argon2.hash_password(credential_input.as_bytes(), &salt).map_err(|e| format!("hashing error: {}", e))?.to_string();
     let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    sqlx::query("INSERT INTO users (id, username, api_key_hash, is_sudoer, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)")
-        .bind(&id).bind(&username).bind(&credential_hash).bind(&now).bind(&now).execute(pool).await?;
-    println!("✅ Sudo user created!\n   Username: {}\n   Token:    {}\n\n🔐 Authenticate with: Authorization: Bearer {}:{}", username, token, username, token);
+    let (expires_at, display_expiry): (Option<String>, String) = if expires_days == 0 {
+        (None, "never".to_string())
+    } else {
+        let e = (Utc::now() + chrono::Duration::days(expires_days as i64))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        (Some(e.clone()), e)
+    };
+    sqlx::query("INSERT INTO users (id, username, api_key_hash, is_sudoer, created_at, updated_at, api_key_expires_at) VALUES (?, ?, ?, 1, ?, ?, ?)")
+        .bind(&id).bind(&username).bind(&credential_hash).bind(&now).bind(&now).bind(&expires_at)
+        .execute(pool).await?;
+    println!("✅ Sudo user created!\n   Username: {}\n   Token:    {}\n   Expires:  {}\n\n🔐 Authenticate with: Authorization: Bearer {}:{}", username, token, display_expiry, username, token);
     println!("⚠️  Save these credentials — the token will not be shown again.");
     Ok(())
 }

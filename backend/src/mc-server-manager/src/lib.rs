@@ -68,7 +68,7 @@ pub use mc_server_installer;
 mod error;
 pub mod instance;
 pub mod log;
-pub mod manager;
+pub mod managers;
 pub mod player;
 pub mod properties;
 pub mod registry;
@@ -82,7 +82,7 @@ pub mod world;
 pub use error::Error;
 pub use instance::{ServerConfig, ServerInstance};
 pub use log::LogManager;
-pub use manager::{ManagedServer, ModInfo, ModpackInfo, ServerHandle, ServerStatus};
+pub use managers::{ManagedServer, ModInfo, ModpackInfo, ServerHandle, ServerStatus};
 pub use player::{PlayerInfo, PlayerTracker};
 pub use properties::ServerProperties;
 pub use registry::{

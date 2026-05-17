@@ -14,15 +14,19 @@ pub struct RamDisk {
 impl RamDisk {
     pub fn setup(up: Option<&str>, data_dir: &Path, servers_dir: &Path) -> Result<Self, String> {
         let root = resolve(up);
+        // Start with a clean tmpfs root — remove stale files from previous runs
+        if root.exists() {
+            std::fs::remove_dir_all(&root).map_err(|e| format!("clean tmpfs: {e}"))?;
+        }
         std::fs::create_dir_all(&root).map_err(|e| format!("create tmpfs: {e}"))?;
         let dd = root.join("data");
         let sd = root.join("servers");
-        if data_dir.exists() && !dd.exists() {
+        if data_dir.exists() {
             copy_dir(data_dir, &dd)?;
-        } else if !data_dir.exists() {
+        } else {
             std::fs::create_dir_all(&dd).map_err(|e| format!("data dir: {e}"))?;
         }
-        if servers_dir.exists() && !sd.exists() {
+        if servers_dir.exists() {
             copy_dir(servers_dir, &sd)?;
         }
         log::info!("Tmpfs ready at {}", root.display());

@@ -1,6 +1,6 @@
 use crate::error::Error;
 use crate::instance::ServerConfig;
-use crate::manager::{ManagedServer, ServerHandle};
+use crate::managers::{ManagedServer, ServerHandle};
 use crate::world::{dir_size, human_size};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
