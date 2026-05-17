@@ -112,6 +112,22 @@ pub async fn modrinth_download_url(
     ))
 }
 
+#[derive(Deserialize)]
+pub struct DepQ {
+    pub mc_version: String,
+    pub loader: String,
+}
+pub async fn modrinth_dependencies(
+    Extension(_u): Extension<User>,
+    Path(slug): Path<String>,
+    Query(q): Query<DepQ>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let deps = modrinth::resolve_dependencies(&slug, &q.mc_version, &q.loader)
+        .await
+        .map_err(|e| AppError::Internal(format!("Failed to resolve dependencies: {e}")))?;
+    Ok(Json(json!(deps)))
+}
+
 pub async fn list_mods(
     State(s): State<Arc<AppState>>,
     Extension(_u): Extension<User>,

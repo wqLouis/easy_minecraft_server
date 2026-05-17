@@ -146,7 +146,7 @@ pub async fn serve(
         .route("/api/instances/{id}/worlds", get(worlds::list_worlds)).route("/api/instances/{id}/worlds/backup", post(worlds::backup_worlds))
         .route("/api/instances/{id}/backups", get(worlds::list_backups)).route("/api/instances/{id}/worlds/upload", post(worlds::upload_world)).route("/api/instances/{id}/worlds/{world_name}", delete(worlds::delete_world))
         .route("/api/instances/{id}/worlds/{world_name}/download", get(worlds::download_world)).route("/api/instances/{id}/worlds/reset", post(worlds::reset_world))
-        .route("/api/modrinth/search", get(mods::modrinth_search)).route("/api/modrinth/project/{slug}", get(mods::modrinth_project)).route("/api/modrinth/project/{slug}/versions", get(mods::modrinth_project_versions)).route("/api/modrinth/project/{slug}/download-url", get(mods::modrinth_download_url))
+        .route("/api/modrinth/search", get(mods::modrinth_search)).route("/api/modrinth/project/{slug}", get(mods::modrinth_project)).route("/api/modrinth/project/{slug}/versions", get(mods::modrinth_project_versions)).route("/api/modrinth/project/{slug}/download-url", get(mods::modrinth_download_url)).route("/api/modrinth/project/{slug}/dependencies", get(mods::modrinth_dependencies))
         .route("/api/instances/{id}/mods", get(mods::list_mods)).route("/api/instances/{id}/mods/install", post(mods::install_mod))
         .route("/api/instances/{id}/mods/{filename}", delete(mods::delete_mod)).route("/api/instances/{id}/mods/{filename}/toggle", put(mods::toggle_mod))
         .route("/api/instances/{id}/mods/modpack", post(mods::generate_modpack)).route("/api/instances/{id}/mods/modpack/download", get(mods::download_modpack))

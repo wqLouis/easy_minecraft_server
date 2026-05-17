@@ -36,6 +36,7 @@ pub struct ModrinthVersion {
     pub loaders: Vec<String>,
     pub game_versions: Vec<String>,
     pub files: Vec<ModrinthFile>,
+    pub dependencies: Vec<ModrinthDependency>,
 }
 
 /// A downloadable file within a version.
@@ -45,6 +46,15 @@ pub struct ModrinthFile {
     pub filename: String,
     pub primary: bool,
     pub size: u64,
+}
+
+/// A dependency of a specific version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModrinthDependency {
+    pub project_id: Option<String>,
+    pub version_id: Option<String>,
+    pub file_name: Option<String>,
+    pub dependency_type: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,6 +111,8 @@ struct VersionResponse {
     loaders: Vec<String>,
     game_versions: Vec<String>,
     files: Vec<VersionFile>,
+    #[serde(default)]
+    dependencies: Vec<ModrinthDependency>,
 }
 
 #[derive(Deserialize)]
@@ -261,6 +273,7 @@ pub async fn fetch_versions(
                     size: f.size,
                 })
                 .collect(),
+            dependencies: v.dependencies,
         })
         .collect())
 }
@@ -294,6 +307,131 @@ pub async fn get_download_url(
         })?;
 
     Ok(file.url.clone())
+}
+
+/// Fetch a single version by its Modrinth version ID.
+pub async fn fetch_version_by_id(version_id: &str) -> Result<ModrinthVersion, Error> {
+    let url = format!("{API_BASE}/version/{version_id}");
+    let resp: VersionResponse = reqwest::get(&url).await?.json().await?;
+    Ok(ModrinthVersion {
+        id: resp.id,
+        name: resp.name,
+        version_number: resp.version_number,
+        loaders: resp.loaders,
+        game_versions: resp.game_versions,
+        files: resp
+            .files
+            .into_iter()
+            .map(|f| ModrinthFile {
+                url: f.url,
+                filename: f.filename,
+                primary: f.primary,
+                size: f.size,
+            })
+            .collect(),
+        dependencies: resp.dependencies,
+    })
+}
+
+/// A resolved dependency with project slug and optional version info.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolvedDependency {
+    pub project_id: String,
+    pub slug: String,
+    pub title: String,
+    pub dependency_type: String,
+    pub version_id: Option<String>,
+    pub version_number: Option<String>,
+    pub download_url: Option<String>,
+    pub filename: Option<String>,
+    pub icon_url: Option<String>,
+}
+
+/// Resolve all required dependencies for a project version matching the
+/// given MC version and loader. Returns the dependency tree (non-recursive
+/// for now — one level deep).
+pub async fn resolve_dependencies(
+    project_slug: &str,
+    mc_version: &str,
+    loader: &str,
+) -> Result<Vec<ResolvedDependency>, Error> {
+    let versions = fetch_versions(project_slug, Some(mc_version), Some(loader)).await?;
+    let version = versions.first().ok_or_else(|| {
+        Error::NoVersion(
+            format!("modrinth/{project_slug}"),
+            format!("{mc_version}+{loader}"),
+        )
+    })?;
+
+    let mut resolved = Vec::new();
+    for dep in &version.dependencies {
+        if dep.dependency_type != "required" {
+            continue;
+        }
+        let pid = match &dep.project_id {
+            Some(id) => id.clone(),
+            None => continue,
+        };
+
+        // Get project details to fetch slug and title
+        let project_url = format!("{API_BASE}/project/{pid}");
+        let project: ProjectResponse = match reqwest::get(&project_url).await {
+            Ok(r) => match r.json().await {
+                Ok(p) => p,
+                Err(_) => continue,
+            },
+            Err(_) => continue,
+        };
+
+        // Find matching version
+        let (v_id, v_num, dl_url, fname) =
+            if let Some(vid) = &dep.version_id {
+                // Specific version specified
+                match fetch_version_by_id(vid).await {
+                    Ok(v) => {
+                        let file = v.files.iter().find(|f| f.primary).or_else(|| v.files.first());
+                        (
+                            Some(v.id.clone()),
+                            Some(v.version_number.clone()),
+                            file.map(|f| f.url.clone()),
+                            file.map(|f| f.filename.clone()),
+                        )
+                    }
+                    Err(_) => (None, None, None, None),
+                }
+            } else {
+                // No specific version — find latest matching our MC+loader
+                match fetch_versions(&project.slug, Some(mc_version), Some(loader)).await {
+                    Ok(vs) => {
+                        if let Some(v) = vs.first() {
+                            let file = v.files.iter().find(|f| f.primary).or_else(|| v.files.first());
+                            (
+                                Some(v.id.clone()),
+                                Some(v.version_number.clone()),
+                                file.map(|f| f.url.clone()),
+                                file.map(|f| f.filename.clone()),
+                            )
+                        } else {
+                            (None, None, None, None)
+                        }
+                    }
+                    Err(_) => (None, None, None, None),
+                }
+            };
+
+        resolved.push(ResolvedDependency {
+            project_id: pid,
+            slug: project.slug,
+            title: project.title,
+            dependency_type: dep.dependency_type.clone(),
+            version_id: v_id,
+            version_number: v_num,
+            download_url: dl_url,
+            filename: fname,
+            icon_url: project.icon_url,
+        });
+    }
+    Ok(resolved)
 }
 
 // ---------------------------------------------------------------------------

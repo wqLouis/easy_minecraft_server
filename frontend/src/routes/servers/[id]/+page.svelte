@@ -60,7 +60,13 @@
     modpackDl = true; noMp = false;
     try {
       const ep = getActiveEndpoint(); if (!ep) return;
-      const res = await fetch(`${ep.url}/api/instances/${id}/mods/modpack/download`, { headers: { Authorization: `Bearer ${getApiKey(ep.id)}` } });
+      const res = await fetch(`${ep.url}/api/instances/${id}/mods/modpack/download`, {
+        headers: {
+          Authorization: `Bearer ${getApiKey(ep.id)}`,
+          "X-Timestamp": Math.floor(Date.now() / 1000).toString(),
+          "X-Nonce": crypto.randomUUID(),
+        },
+      });
       if (res.status === 404) { noMp = true; toast.error("No modpack"); return; }
       if (!res.ok) throw new Error();
       const blob = await res.blob();

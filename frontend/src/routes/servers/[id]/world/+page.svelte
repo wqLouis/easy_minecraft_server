@@ -40,9 +40,14 @@
   async function downloadWorld(name: string) {
     const ep = getActiveEndpoint(); if (!ep) return;
     const key = getApiKey(ep.id);
+    if (!key) return;
     try {
       const res = await fetch(`${ep.url}/api/instances/${id}/worlds/${name}/download`, {
-        headers: key ? { Authorization: `Bearer ${key}` } : {},
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "X-Timestamp": Math.floor(Date.now() / 1000).toString(),
+          "X-Nonce": crypto.randomUUID(),
+        },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();

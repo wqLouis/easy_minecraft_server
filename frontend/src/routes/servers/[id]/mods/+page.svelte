@@ -56,6 +56,7 @@
     await fetchInstalled();
   });
 
+  /// Full initial load: installed mods + server metadata + popular mods.
   async function fetchInstalled() {
     loading = true;
     try {
@@ -68,10 +69,18 @@
       const cfg = inst.config as Record<string, unknown>;
       provider = (cfg.provider as string) ?? "";
       mcVersion = (cfg.version as string) ?? "";
-      // Auto-load popular mods in the background
+      // Auto-load popular mods in the background (only on initial load)
       loadPopular();
     } catch { /* ignore */ }
     finally { loading = false; }
+  }
+
+  /// Lightweight refresh: only update the installed list, leave browse tab untouched.
+  async function refreshInstalled() {
+    try {
+      const mr = await getApi().get<{ items: typeof installed }>(`/api/instances/${id}/mods`).catch(() => ({ items: [] }));
+      installed = mr.items ?? [];
+    } catch { /* ignore */ }
   }
 
   function buildSearchUrl(query: string, off: number = 0) {
@@ -121,19 +130,19 @@
       );
       await getApi().post(`/api/instances/${id}/mods/install`, { download_url: info.download_url, filename: info.filename });
       toast.success(`Installed "${slug}"`);
-      fetchInstalled();
+      refreshInstalled();
     } catch (e) { toast.error("Install failed", { description: e instanceof Error ? e.message : "" }); }
     finally { installingMod = null; }
   }
 
   async function removeMod(filename: string) {
     if (!confirm(`Remove "${filename}"?`)) return;
-    try { await getApi().del(`/api/instances/${id}/mods/${filename}`); toast.success("Removed"); fetchInstalled(); }
+    try { await getApi().del(`/api/instances/${id}/mods/${filename}`); toast.success("Removed"); refreshInstalled(); }
     catch (e) { toast.error("Remove failed", { description: e instanceof Error ? e.message : "" }); }
   }
 
   async function toggleMod(filename: string, enabled: boolean) {
-    try { await getApi().put(`/api/instances/${id}/mods/${filename}/toggle`, { enabled: !enabled }); fetchInstalled(); }
+    try { await getApi().put(`/api/instances/${id}/mods/${filename}/toggle`, { enabled: !enabled }); refreshInstalled(); }
     catch (e) { toast.error("Toggle failed", { description: e instanceof Error ? e.message : "" }); }
   }
 
@@ -232,7 +241,7 @@
       <Tabs.Content value="browse">
         <div class="mb-4 flex gap-2">
           <div class="relative flex-1"><SearchIcon class="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input bind:value={searchQuery} placeholder="Search Modrinth (or leave empty for popular)…" onkeydown={(e) => e.key === "Enter" && search()} class="pl-10" /></div>
-          <Button onclick={search} disabled={searching}>{#if searching}<RefreshCwIcon class="size-4 animate-spin" />{:else}<SearchIcon class="size-4" />{/if} Search</Button>
+          <Button onclick={() => search()} disabled={searching}>{#if searching}<RefreshCwIcon class="size-4 animate-spin" />{:else}<SearchIcon class="size-4" />{/if} Search</Button>
         </div>
         <!-- Filters -->
         <div class="mb-4 flex flex-wrap items-center gap-2">
