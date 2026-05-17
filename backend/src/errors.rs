@@ -28,6 +28,8 @@ pub enum AppError {
     ApiKeyExpired,
     #[error("Invalid path: {0}")]
     InvalidPath(String),
+    #[error("{0}")]
+    Validation(String),
 }
 
 impl IntoResponse for AppError {
@@ -43,7 +45,7 @@ impl IntoResponse for AppError {
             Self::ReplayDetected => (StatusCode::TOO_MANY_REQUESTS, self.to_string()),
             Self::TimestampExpired => (StatusCode::UNAUTHORIZED, self.to_string()),
             Self::ApiKeyExpired => (StatusCode::UNAUTHORIZED, self.to_string()),
-            Self::InvalidPath(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            Self::InvalidPath(_) | Self::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             Self::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error".into()),
         };
         (status, Json(json!({"error": msg, "code": status.as_u16()}))).into_response()

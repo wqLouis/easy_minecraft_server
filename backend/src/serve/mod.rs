@@ -127,6 +127,7 @@ pub async fn serve(
         server_registry: registry,
         rate_limiter: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         replay_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        tmpfs_root: ramdisk.as_ref().map(|r| r.root.clone()),
     });
     log::info!("Loaded {} blacklisted IP(s)", loaded.len());
 
@@ -226,8 +227,7 @@ async fn get_settings(
     Ok(Json(
         s.settings
             .read()
-            .map_err(|e| AppError::Internal(format!("Settings lock: {e}")))
-            .unwrap()
+            .map_err(|e| AppError::Internal(format!("Settings lock: {e}")))?
             .clone(),
     ))
 }
@@ -239,14 +239,26 @@ async fn update_settings(
     Extension(_u): Extension<User>,
     Json(n): Json<AppSettings>,
 ) -> Result<Json<AppSettings>, AppError> {
-    if n.servers_dir.contains("..") || n.servers_dir.contains('~') || n.servers_dir.starts_with('/')
-    {
-        return Err(AppError::Internal(
-            "servers_dir must be a relative path without '..' or '~'".into(),
+    if n.servers_dir.contains("..") || n.servers_dir.contains('~') {
+        return Err(AppError::Validation(
+            "servers_dir must not contain '..' or '~'".into(),
         ));
     }
+    // Absolute servers_dir only allowed if it's the tmpfs root path.
+    if n.servers_dir.starts_with('/') {
+        let allowed = s
+            .tmpfs_root
+            .as_ref()
+            .map(|root| n.servers_dir.starts_with(root.to_string_lossy().as_ref()))
+            .unwrap_or(false);
+        if !allowed {
+            return Err(AppError::Validation(
+                "Absolute servers_dir is only allowed when using --tmpfs".into(),
+            ));
+        }
+    }
     if !n.java_path.contains("java") || n.java_path.contains("..") {
-        return Err(AppError::Internal(
+        return Err(AppError::Validation(
             "java_path must point to a Java executable".into(),
         ));
     }

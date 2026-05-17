@@ -33,6 +33,8 @@ pub struct AppState {
     pub rate_limiter: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
     /// Replay cache: user_id → (nonce → seen_at Instant)
     pub replay_cache: Arc<Mutex<HashMap<String, HashMap<String, Instant>>>>,
+    /// Tmpfs root path (set when --tmpfs is used), for validation.
+    pub tmpfs_root: Option<PathBuf>,
 }
 impl AppState {
     pub fn get_server(&self, id: &str) -> Result<mc_server_manager::ManagedServer, AppError> {
