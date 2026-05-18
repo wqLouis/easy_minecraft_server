@@ -1,6 +1,6 @@
 use crate::error::Error;
 use crate::instance::ServerConfig;
-use crate::managers::{ManagedServer, ServerHandle};
+use crate::managers::{ManagedServer, ModInfo, ServerHandle};
 use crate::world::{dir_size, human_size};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,6 +22,16 @@ pub struct InstanceConfig {
     pub server_dir: String,
     #[serde(default)]
     pub jar_path: String,
+    /// The mod-loader version (e.g. fabric-loader "0.16.10", forge "47.1.0").
+    /// When set, this is used in modpack generation instead of scanning the
+    /// server's library directories.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader_version: Option<String>,
+    /// Cached list of installed mods/plugins. Updated on install/delete/toggle
+    /// so that modpack generation and instance queries can reference it without
+    /// re-scanning the server directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mods: Option<Vec<ModInfo>>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct InstanceSummary {
@@ -261,11 +271,32 @@ impl ServerRegistry {
     pub fn get_info(&self, id: &str) -> Option<(InstanceConfig, ServerHandle)> {
         let m = self.instances.read().ok()?;
         let s = m.get(id)?;
-        Some((InstanceConfig::from_managed(s), s.handle().clone()))
+        let mut cfg = InstanceConfig::from_managed(s);
+        // Try to restore cached mods from the saved .instance.json on disk
+        // so that the API response includes them without a directory re-scan.
+        let saved_path = PathBuf::from(&cfg.server_dir).join(INSTANCE_CONFIG_FILE);
+        if let Ok(data) = std::fs::read_to_string(&saved_path) {
+            if let Ok(saved) = serde_json::from_str::<InstanceConfig>(&data) {
+                cfg.mods = saved.mods;
+                // Also prefer saved loader_version if the in-memory one is None
+                if cfg.loader_version.is_none() {
+                    cfg.loader_version = saved.loader_version;
+                }
+            }
+        }
+        Some((cfg, s.handle().clone()))
     }
     pub async fn start(&self, id: &str) -> Result<(), Error> {
         let mut server = self.get_server(id)?;
         server.start().await?;
+
+        // After the installer has run (for Fabric/Forge/NeoForge), detect the
+        // loader version from the installed library directories and persist it.
+        let detected_lv = server.detect_loader_version().map(|(_, lv)| lv);
+        if let Some(ref lv) = detected_lv {
+            server.set_loader_version(lv.clone());
+        }
+
         {
             let mut m = self
                 .instances
@@ -273,13 +304,57 @@ impl ServerRegistry {
                 .map_err(|e| Error::other(e.to_string()))?;
             m.insert(id.to_string(), server);
         }
-        if let Some((cfg, _)) = self.get_info(id) {
-            self.save_one(&cfg)?;
+
+        // Persist loader_version if we detected one
+        if let Some(ref lv) = detected_lv {
+            if let Some((mut cfg, _)) = self.get_info(id) {
+                cfg.loader_version = Some(lv.clone());
+                self.save_one(&cfg)?;
+            }
         }
         Ok(())
     }
     pub async fn stop(&self, id: &str) -> Result<(), Error> {
         self.get_server(id)?.stop().await
+    }
+
+    /// Detect and persist the mod-loader version from the server's installed
+    /// library directories. Call this after the installer runs on first start,
+    /// or whenever you want to refresh the stored version.
+    pub fn sync_loader_version(&self, id: &str) -> Result<(), Error> {
+        let server = self.get_server(id)?;
+        if let Some((_, lv)) = server.detect_loader_version() {
+            // Update the in-memory server
+            {
+                let mut m = self
+                    .instances
+                    .write()
+                    .map_err(|e| Error::other(e.to_string()))?;
+                if let Some(s) = m.get_mut(id) {
+                    s.set_loader_version(lv.clone());
+                }
+            }
+            // Persist to .instance.json
+            if let Some((mut cfg, _)) = self.get_info(id) {
+                cfg.loader_version = Some(lv);
+                self.save_one(&cfg)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Refresh the stored mod list in the instance config from the filesystem.
+    /// Call this after installing, deleting, or toggling mods.
+    pub fn sync_mod_list(&self, id: &str) -> Result<(), Error> {
+        let server = self.get_server(id)?;
+        let mods = server.list_mods().unwrap_or_default();
+        let mods_for_config = if mods.is_empty() { None } else { Some(mods) };
+        // Persist to .instance.json
+        if let Some((mut cfg, _)) = self.get_info(id) {
+            cfg.mods = mods_for_config;
+            self.save_one(&cfg)?;
+        }
+        Ok(())
     }
     pub async fn kill(&self, id: &str) -> Result<(), Error> {
         self.get_server(id)?.kill().await
@@ -316,7 +391,7 @@ impl ServerRegistry {
     }
 
     /// Save a single instance's config to its own server directory.
-    fn save_one(&self, cfg: &InstanceConfig) -> Result<(), Error> {
+    pub fn save_one(&self, cfg: &InstanceConfig) -> Result<(), Error> {
         let dir = PathBuf::from(&cfg.server_dir);
         std::fs::create_dir_all(&dir).map_err(|e| Error::other(e.to_string()))?;
         let data = serde_json::to_string_pretty(cfg)
@@ -332,7 +407,7 @@ pub fn instance_config_schema() -> serde_json::Value {
 
 impl InstanceConfig {
     fn to_managed(&self) -> ManagedServer {
-        ManagedServer::new(
+        let mut server = ManagedServer::new(
             self.id.clone(),
             self.name.clone(),
             ServerConfig::new(
@@ -346,7 +421,12 @@ impl InstanceConfig {
             PathBuf::from(&self.server_dir).join("data"),
             self.provider.clone(),
             self.version.clone(),
-        )
+        );
+        // Restore stored loader version and cached mods
+        if let Some(ref lv) = self.loader_version {
+            server.set_loader_version(lv.clone());
+        }
+        server
     }
     fn from_managed(s: &ManagedServer) -> Self {
         let c = s.config();
@@ -361,6 +441,8 @@ impl InstanceConfig {
             max_memory: c.max_memory.clone(),
             server_dir: c.server_dir.to_string_lossy().to_string(),
             jvm_args: c.jvm_args.clone(),
+            loader_version: s.loader_version(),
+            mods: None, // mods are synced separately via update_instance_mods()
         }
     }
 }

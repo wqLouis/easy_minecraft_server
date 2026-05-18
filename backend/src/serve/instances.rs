@@ -61,20 +61,42 @@ pub async fn create_instance(
     Json(mut c): Json<InstanceConfig>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     validate_id(&c.id)?;
-    let settings = s
-        .settings
-        .read()
-        .map_err(|e| AppError::Internal(format!("Settings lock: {e}")))?;
-    c.server_dir = format!("{}/{}", settings.servers_dir.trim_end_matches('/'), c.id);
-    c.jar_path = format!("{}/server.jar", c.server_dir);
-    if c.java_path.is_empty() {
-        c.java_path = settings.java_path.clone();
+    {
+        let settings = s
+            .settings
+            .read()
+            .map_err(|e| AppError::Internal(format!("Settings lock: {e}")))?;
+        c.server_dir = format!("{}/{}", settings.servers_dir.trim_end_matches('/'), c.id);
+        c.jar_path = format!("{}/server.jar", c.server_dir);
+        if c.java_path.is_empty() {
+            c.java_path = settings.java_path.clone();
+        }
+        // settings dropped here
     }
-    drop(settings);
+
+    // If this is a loader-based provider and no loader_version was given,
+    // auto-fetch the latest loader version from the meta API.
+    if c.loader_version.is_none() {
+        if let Some(lv) = fetch_loader_version(&c.provider, &c.version).await {
+            c.loader_version = Some(lv);
+        }
+    }
+
     s.server_registry
         .create(c.clone())
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(json!({"created": true, "instance": c})))
+}
+
+/// Fetch the latest loader version for Fabric/Forge/NeoForge from meta APIs.
+async fn fetch_loader_version(provider: &str, mc_version: &str) -> Option<String> {
+    // Uses mc_server_installer's provider-specific logic to get the build/loader
+    // version. For Fabric this returns the loader version, for Forge/NeoForge
+    // it returns their respective version strings.
+    match mc_server_manager::fetch_latest(provider, mc_version).await {
+        Ok(info) => info.build,
+        Err(_) => None,
+    }
 }
 
 pub async fn get_instance(

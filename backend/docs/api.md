@@ -191,22 +191,50 @@ Disabling renames `{filename}` to `{filename}.jar.disabled`. Enabling does the r
 {
   "id": "my-server",
   "name": "My Survival Server",
+  "provider": "fabric",
+  "version": "1.21.4",
   "jar_path": "/srv/minecraft/servers/my-server/server.jar",
   "java_path": "",
   "min_memory": "1G",
   "max_memory": "4G",
-  "jvm_args": ["-XX:+UseG1GC"]
+  "jvm_args": ["-XX:+UseG1GC"],
+  "loader_version": "0.16.10"
 }
 ```
 
 - `server_dir` is **always** derived server-side from `{settings.servers_dir}/{id}` — do not send it
-- If `java_path` is empty, `settings.java_path` is used
+- `java_path` defaults to `settings.java_path` when empty
+- `loader_version` is optional. For `fabric` / `forge` / `neoforge` providers, if omitted the backend auto-fetches the **latest** loader version for the given MC version on creation.
+- `mods` is a read-only cache populated automatically after install/delete/toggle operations.
 
 ### Instance Detail Response (GET)
 
 ```json
 {
-  "config": { "...": "same as above" },
+  "config": {
+    "id": "my-server",
+    "name": "My Survival Server",
+    "provider": "fabric",
+    "version": "1.21.4",
+    "jar_path": "./servers/my-server/server.jar",
+    "java_path": "/usr/bin/java",
+    "min_memory": "1G",
+    "max_memory": "4G",
+    "jvm_args": ["-XX:+UseG1GC"],
+    "server_dir": "./servers/my-server",
+    "loader_version": "0.16.10",
+    "mods": [
+      {
+        "filename": "sodium-fabric.jar",
+        "name": "sodium-fabric",
+        "enabled": true,
+        "size_bytes": 123456,
+        "size_human": "120.6 KB",
+        "last_modified": "2025-01-15T12:00:00Z",
+        "download_url": "https://cdn.modrinth.com/..."
+      }
+    ]
+  },
   "status": {
     "id": "my-server",
     "name": "My Survival Server",
@@ -218,6 +246,8 @@ Disabling renames `{filename}` to `{filename}.jar.disabled`. Enabling does the r
   }
 }
 ```
+
+The `loader_version` and `mods` fields are persisted in the server's `.instance.json` file and survive restarts.
 
 ## Settings
 

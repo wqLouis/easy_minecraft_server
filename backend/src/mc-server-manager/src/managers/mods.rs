@@ -44,7 +44,7 @@ use super::server::ManagedServer;
 // ---------------------------------------------------------------------------
 
 /// Information about a single mod or plugin file.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ModInfo {
     pub filename: String,
     pub name: String,

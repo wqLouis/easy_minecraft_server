@@ -135,6 +135,11 @@ pub struct ManagedServer {
     pub(crate) config: ServerConfig,
     pub(crate) provider: String,
     pub(crate) version: String,
+    /// The mod-loader version (e.g. fabric-loader "0.16.10", forge "47.1.0").
+    /// Persisted via [`InstanceConfig::loader_version`] and used by
+    /// [`generate_modpack`](crate::managers::mods::ManagedServer::generate_modpack)
+    /// to include an exact loader dependency instead of scanning library dirs.
+    pub(crate) loader_version: Option<String>,
 }
 
 impl ManagedServer {
@@ -170,6 +175,7 @@ impl ManagedServer {
             config,
             provider,
             version,
+            loader_version: None,
         }
     }
 
@@ -340,6 +346,17 @@ impl ManagedServer {
         &self.version
     }
 
+    /// Get the mod-loader version (e.g. "0.16.10" for fabric-loader).
+    pub fn loader_version(&self) -> Option<String> {
+        self.loader_version.clone()
+    }
+
+    /// Set the mod-loader version. This is called when restoring from
+    /// [`InstanceConfig`] or after the installer runs on first start.
+    pub fn set_loader_version(&mut self, version: String) {
+        self.loader_version = Some(version);
+    }
+
     /// Get the server's working directory.
     pub fn server_dir(&self) -> &Path {
         &self.config.server_dir
@@ -381,7 +398,25 @@ impl ManagedServer {
     /// (like `"*"` or `">=0.0.0"`) that contain characters illegal in
     /// Windows paths — some launchers (PCL) use the version string
     /// literally when downloading the loader.
+    ///
+    /// ## Precedence
+    ///
+    /// 1. The stored [`loader_version`](Self::loader_version) field (set via
+    ///    [`InstanceConfig::loader_version`] or after first install).
+    /// 2. Scanning the server's library directories (the original method).
     pub fn detect_loader_version(&self) -> Option<(String, String)> {
+        // 1. Check stored loader_version first
+        if let Some(ref lv) = self.loader_version {
+            let key = match self.provider.to_lowercase().as_str() {
+                "fabric" => "fabric-loader",
+                "forge" => "forge",
+                "neoforge" => "neoforge",
+                "quilt" => "quilt-loader",
+                _ => return None,
+            };
+            return Some((key.to_string(), lv.clone()));
+        }
+        // 2. Fall back to directory scanning
         let sd = &self.config.server_dir;
         match self.provider.to_lowercase().as_str() {
             "fabric" => {

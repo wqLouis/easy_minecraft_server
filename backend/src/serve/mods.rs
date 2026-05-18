@@ -175,6 +175,8 @@ pub async fn install_mod(
         .install_mod(&body.download_url, &decoded)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Sync the mod list to .instance.json
+    let _ = s.server_registry.sync_mod_list(&id);
     Ok(Json(
         json!({"installed": true, "id": id, "filename": m.filename, "path": server.mods_dir().join(&m.filename).to_string_lossy(), "size_bytes": m.size_bytes}),
     ))
@@ -197,6 +199,8 @@ pub async fn delete_mod(
     server
         .delete_mod(&filename)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Sync the mod list to .instance.json
+    let _ = s.server_registry.sync_mod_list(&id);
     Ok(Json(
         json!({"removed": true, "id": id, "filename": filename}),
     ))
@@ -219,6 +223,8 @@ pub async fn toggle_mod(
     let info = server
         .toggle_mod(&filename, body.enabled)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    // Sync the mod list to .instance.json
+    let _ = s.server_registry.sync_mod_list(&id);
     Ok(Json(
         json!({"id": id, "filename": info.filename, "enabled": info.enabled}),
     ))
