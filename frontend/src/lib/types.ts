@@ -1,3 +1,5 @@
+import type { Snippet } from "svelte";
+
 export interface MinecraftServer {
   id: string;
   name: string;

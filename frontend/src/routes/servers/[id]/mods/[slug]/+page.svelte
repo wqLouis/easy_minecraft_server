@@ -8,7 +8,6 @@
   import { Badge } from "$lib/components/ui/badge/index.js";
   import * as DropdownMenu from "$lib/components/ui/dropdown-menu/index.js";
   import { isAuthenticated, isConfigured, getApi } from "$lib/api";
-  import { fmtCompact } from "$lib/utils";
 
   let project = $state<Record<string, unknown> | null>(null);
   let versions = $state<{ id: string; name: string; version_number: string; loaders: string[]; game_versions: string[] }[]>([]);
@@ -143,7 +142,7 @@
     finally { installingVersion = null; }
   }
 
-
+  function fmt(n: number): string { return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}K` : `${n}`; }
 </script>
 
 <div class="mx-auto max-w-4xl px-6 py-6">
@@ -166,8 +165,8 @@
         </div>
         <p class="mt-1 text-sm text-muted-foreground">{project.description as string}</p>
         <div class="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          <span class="flex items-center gap-1"><DownloadIcon class="size-3.5" /> {fmtCompact(project.downloads as number)} downloads</span>
-          <span class="flex items-center gap-1"><UsersIcon class="size-3.5" /> {fmtCompact(project.follows as number)} follows</span>
+          <span class="flex items-center gap-1"><DownloadIcon class="size-3.5" /> {fmt(project.downloads as number)} downloads</span>
+          <span class="flex items-center gap-1"><UsersIcon class="size-3.5" /> {fmt(project.follows as number)} follows</span>
           <span>Client: {project.client_side as string ?? "unknown"}</span>
           <span>Server: {project.server_side as string ?? "unknown"}</span>
           <a href={project.page_url as string} target="_blank" rel="noopener noreferrer" class="flex items-center gap-1 text-primary hover:underline"><ExternalLinkIcon class="size-3.5" /> Modrinth</a>

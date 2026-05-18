@@ -8,7 +8,6 @@
   import { Badge } from "$lib/components/ui/badge/index.js";
   import { Separator } from "$lib/components/ui/separator/index.js";
   import { isAuthenticated, isConfigured, getApi, getActiveEndpoint, getApiKey } from "$lib/api";
-import { formatBytes } from "$lib/utils";
 
   let cfg = $state<Record<string, unknown> | null>(null);
   let st = $state<Record<string, unknown> | null>(null);
@@ -80,6 +79,14 @@ import { formatBytes } from "$lib/utils";
     } catch {
       modpackExists = false;
     }
+  }
+
+  function formatBytes(bytes: number): string {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
   }
 
   async function toggle() {
