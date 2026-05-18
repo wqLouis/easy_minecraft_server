@@ -39,38 +39,56 @@ pub struct ArchivedSummary {
     pub size_bytes: u64,
     pub size_human: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Saved {
-    instances: Vec<InstanceConfig>,
-}
+
+/// Name of the per-instance config file stored inside each server directory.
+pub const INSTANCE_CONFIG_FILE: &str = ".instance.json";
 
 #[derive(Clone)]
 pub struct ServerRegistry {
     instances: Arc<RwLock<HashMap<String, ManagedServer>>>,
-    config_path: PathBuf,
     archive_root: PathBuf,
 }
 
 impl ServerRegistry {
-    pub fn new(config_path: PathBuf) -> Self {
-        let instances = Arc::new(RwLock::new(HashMap::new()));
-        let ar = config_path
-            .parent()
-            .map(|p| p.join("_archived"))
-            .unwrap_or_else(|| PathBuf::from("./data/_archived"));
-        let r = Self {
-            instances: instances.clone(),
-            config_path,
-            archive_root: ar,
-        };
-        if let Ok(s) = r.load() {
-            let mut m = instances.write().unwrap();
-            for c in s.instances {
-                m.insert(c.id.clone(), c.to_managed());
-            }
+    /// Create a new empty registry.
+    pub fn new(archive_root: PathBuf) -> Self {
+        Self {
+            instances: Arc::new(RwLock::new(HashMap::new())),
+            archive_root,
         }
-        r
     }
+
+    /// Scan `servers_dir` for subdirectories containing `.instance.json`
+    /// and load each one as an instance. Returns the number loaded.
+    pub fn load_from(&self, servers_dir: &Path) -> Result<usize, Error> {
+        let mut count = 0;
+        if !servers_dir.is_dir() {
+            return Ok(0);
+        }
+        for entry in std::fs::read_dir(servers_dir).map_err(|e| Error::other(e.to_string()))? {
+            let entry = entry.map_err(|e| Error::other(e.to_string()))?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let cfg_path = path.join(INSTANCE_CONFIG_FILE);
+            if !cfg_path.is_file() {
+                continue;
+            }
+            let data =
+                std::fs::read_to_string(&cfg_path).map_err(|e| Error::other(e.to_string()))?;
+            let cfg: InstanceConfig =
+                serde_json::from_str(&data).map_err(|e| Error::other(e.to_string()))?;
+            let mut m = self
+                .instances
+                .write()
+                .map_err(|e| Error::other(e.to_string()))?;
+            m.insert(cfg.id.clone(), cfg.to_managed());
+            count += 1;
+        }
+        Ok(count)
+    }
+
     pub fn create(&self, config: InstanceConfig) -> Result<(), Error> {
         let s = config.to_managed();
         let mut m = self
@@ -82,7 +100,7 @@ impl ServerRegistry {
         }
         m.insert(config.id.clone(), s);
         drop(m);
-        self.save()
+        self.save_one(&config)
     }
     fn sanitize_id(id: &str) -> Result<(), Error> {
         if id.is_empty()
@@ -113,9 +131,12 @@ impl ServerRegistry {
         }
         if dst.exists() {
             if let Ok(c) = serde_json::to_string_pretty(&cfg) {
-                let _ = std::fs::write(dst.join(".instance.json"), c);
+                let _ = std::fs::write(dst.join(INSTANCE_CONFIG_FILE), c);
             }
         }
+        // Remove the old .instance.json from the original location
+        let old_cfg = PathBuf::from(&cfg.server_dir).join(INSTANCE_CONFIG_FILE);
+        let _ = std::fs::remove_file(&old_cfg);
         {
             let mut m = self
                 .instances
@@ -123,7 +144,6 @@ impl ServerRegistry {
                 .map_err(|e| Error::other(e.to_string()))?;
             m.remove(id);
         }
-        self.save()?;
         log::info!("Instance '{id}' archived");
         Ok(())
     }
@@ -137,9 +157,9 @@ impl ServerRegistry {
             return Err(Error::other(format!("'{id}' not found")));
         }
         m.remove(id);
-        m.insert(config.id, ns);
+        m.insert(config.id.clone(), ns);
         drop(m);
-        self.save()
+        self.save_one(&config)
     }
     pub fn list_archived(&self) -> Vec<ArchivedSummary> {
         let mut a = vec![];
@@ -153,7 +173,7 @@ impl ServerRegistry {
             }
             let id = e.file_name().to_string_lossy().to_string();
             let c: Option<InstanceConfig> =
-                std::fs::read_to_string(e.path().join(".instance.json"))
+                std::fs::read_to_string(e.path().join(INSTANCE_CONFIG_FILE))
                     .ok()
                     .and_then(|c| serde_json::from_str(&c).ok());
             let (n, p, v) = c
@@ -189,7 +209,7 @@ impl ServerRegistry {
             return Err(Error::other(format!("Archived '{id}' not found")));
         }
         let cfg: InstanceConfig = serde_json::from_str(
-            &std::fs::read_to_string(ad.join(".instance.json"))
+            &std::fs::read_to_string(ad.join(INSTANCE_CONFIG_FILE))
                 .map_err(|e| Error::other(e.to_string()))?,
         )
         .map_err(|e| Error::other(e.to_string()))?;
@@ -208,7 +228,7 @@ impl ServerRegistry {
                 .map_err(|e| Error::other(e.to_string()))?;
             m.insert(id.to_string(), cfg.to_managed());
         }
-        self.save()?;
+        self.save_one(&cfg)?;
         log::info!("Instance '{id}' restored");
         Ok(())
     }
@@ -253,7 +273,10 @@ impl ServerRegistry {
                 .map_err(|e| Error::other(e.to_string()))?;
             m.insert(id.to_string(), server);
         }
-        self.save()
+        if let Some((cfg, _)) = self.get_info(id) {
+            self.save_one(&cfg)?;
+        }
+        Ok(())
     }
     pub async fn stop(&self, id: &str) -> Result<(), Error> {
         self.get_server(id)?.stop().await
@@ -291,28 +314,15 @@ impl ServerRegistry {
     pub async fn send_command(&self, id: &str, cmd: &str) -> Result<(), Error> {
         self.get_server(id)?.send_command(cmd).await
     }
-    fn load(&self) -> Result<Saved, Error> {
-        match std::fs::read_to_string(&self.config_path) {
-            Ok(c) => serde_json::from_str(&c).map_err(|e| Error::other(format!("parse: {e}"))),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Saved { instances: vec![] }),
-            Err(e) => Err(Error::other(format!("read: {e}"))),
-        }
-    }
-    fn save(&self) -> Result<(), Error> {
-        let configs: Vec<InstanceConfig> = self
-            .instances
-            .read()
-            .map_err(|e| Error::other(e.to_string()))?
-            .values()
-            .map(|s| InstanceConfig::from_managed(s))
-            .collect();
-        let c = serde_json::to_string_pretty(&Saved { instances: configs })
+
+    /// Save a single instance's config to its own server directory.
+    fn save_one(&self, cfg: &InstanceConfig) -> Result<(), Error> {
+        let dir = PathBuf::from(&cfg.server_dir);
+        std::fs::create_dir_all(&dir).map_err(|e| Error::other(e.to_string()))?;
+        let data = serde_json::to_string_pretty(cfg)
             .map_err(|e| Error::other(e.to_string()))?;
-        if let Some(p) = self.config_path.parent() {
-            std::fs::create_dir_all(p).map_err(|e| Error::other(e.to_string()))?;
-        }
-        std::fs::write(&self.config_path, c).map_err(|e| Error::other(e.to_string()))?;
-        Ok(())
+        std::fs::write(dir.join(INSTANCE_CONFIG_FILE), data)
+            .map_err(|e| Error::other(e.to_string()))
     }
 }
 

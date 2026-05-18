@@ -28,6 +28,9 @@ pub enum Commands {
         /// Tmpfs directory (default: system temp + /easymc).
         #[arg(long)]
         tmpfs_path: Option<String>,
+        /// Port to listen on (overrides settings.json).
+        #[arg(long, short)]
+        port: Option<u16>,
     },
     /// Create a sudo user directly in the database.
     CreateSudo {
@@ -71,9 +74,10 @@ pub async fn dispatch(
             tmpfs,
             tmpfs_size,
             tmpfs_path,
+            port,
         } => {
             if daemon {
-                daemonize(tmpfs, tmpfs_size.clone(), tmpfs_path.clone())?;
+                daemonize(tmpfs, tmpfs_size.clone(), tmpfs_path.clone(), port)?;
             }
             crate::serve::serve(
                 pool,
@@ -83,6 +87,7 @@ pub async fn dispatch(
                 tmpfs_size,
                 tmpfs_path,
                 database_url,
+                port,
             )
             .await
         }
@@ -109,6 +114,7 @@ fn daemonize(
     tmpfs: bool,
     tmpfs_size: Option<String>,
     tmpfs_path: Option<String>,
+    port: Option<u16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let exe = std::env::current_exe()?;
     let log = std::fs::File::create("server.log")?;
@@ -122,6 +128,9 @@ fn daemonize(
     }
     if let Some(ref p) = tmpfs_path {
         c.arg("--tmpfs-path").arg(p);
+    }
+    if let Some(ref p) = port {
+        c.arg("--port").arg(p.to_string());
     }
     let child = c
         .stdout(log.try_clone()?)

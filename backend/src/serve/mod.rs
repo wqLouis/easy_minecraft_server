@@ -35,6 +35,7 @@ pub async fn serve(
     _size: Option<String>,
     tmpfs_path: Option<String>,
     database_url: String,
+    cli_port: Option<u16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ── Load settings and IP ban ──────────────────────────────────
     let app_settings = settings_mod::load_settings(&settings_path);
@@ -86,11 +87,24 @@ pub async fn serve(
 
         let active_sp = rd.data_dir.join("settings.json");
         let active_bp = rd.data_dir.join("blacklist.json");
-        let ip = active_bp
+        let archive_root = active_bp
             .parent()
-            .map(|p| p.join("instances.json"))
-            .unwrap_or_else(|| PathBuf::from("./data/instances.json"));
-        let registry = ServerRegistry::new(ip.clone());
+            .map(|p| p.join("_archived"))
+            .unwrap_or_else(|| PathBuf::from("./data/_archived"));
+        let registry = ServerRegistry::new(archive_root);
+        // Scan servers dir for .instance.json files and load them
+        {
+            let sd = settings
+                .read()
+                .map_err(|e| format!("Settings lock: {e}"))?
+                .servers_dir
+                .clone();
+            let servers_path = PathBuf::from(&sd);
+            match registry.load_from(&servers_path) {
+                Ok(n) => log::info!("Loaded {} instance(s) from {}", n, sd),
+                Err(e) => log::warn!("Failed to load instances: {e}"),
+            }
+        }
 
         // Remap server_dir paths in existing instances to tmpfs paths.
         for s in registry.list() {
@@ -113,11 +127,24 @@ pub async fn serve(
 
         (Some(rd), active_sp, active_bp, registry)
     } else {
-        let ip = blacklist_path
+        let archive_root = blacklist_path
             .parent()
-            .map(|p| p.join("instances.json"))
-            .unwrap_or_else(|| PathBuf::from("./data/instances.json"));
-        let registry = ServerRegistry::new(ip);
+            .map(|p| p.join("_archived"))
+            .unwrap_or_else(|| PathBuf::from("./data/_archived"));
+        let registry = ServerRegistry::new(archive_root);
+        // Scan servers dir for .instance.json files and load them
+        {
+            let sd = settings
+                .read()
+                .map_err(|e| format!("Settings lock: {e}"))?
+                .servers_dir
+                .clone();
+            let servers_path = PathBuf::from(&sd);
+            match registry.load_from(&servers_path) {
+                Ok(n) => log::info!("Loaded {} instance(s) from {}", n, sd),
+                Err(e) => log::warn!("Failed to load instances: {e}"),
+            }
+        }
         (None, settings_path, blacklist_path, registry)
     };
     let sr = registry.clone();
@@ -132,6 +159,7 @@ pub async fn serve(
         server_registry: registry,
         rate_limiter: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         replay_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        tmpfs_root: ramdisk.as_ref().map(|r| r.root.clone()),
     });
     log::info!("Loaded {} blacklisted IP(s)", loaded.len());
 
@@ -240,10 +268,17 @@ pub async fn serve(
         .with_state(state);
 
     // ── Listen and serve ────────────────────────────────────────
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+    let port = cli_port.unwrap_or_else(|| {
+        settings
+            .read()
+            .map(|s| s.port)
+            .unwrap_or(3000)
+    });
+    let addr = format!("0.0.0.0:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .expect("Failed to bind address");
-    log::info!("Backend API listening on http://0.0.0.0:3000");
+        .unwrap_or_else(|e| panic!("Failed to bind {addr}: {e}"));
+    log::info!("Backend API listening on http://{addr}");
 
     let sig = {
         let rd = ramdisk.clone();

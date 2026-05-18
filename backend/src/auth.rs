@@ -33,6 +33,8 @@ pub struct AppState {
     pub rate_limiter: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
     /// Replay cache: user_id → (nonce → seen_at Instant)
     pub replay_cache: Arc<Mutex<HashMap<String, HashMap<String, Instant>>>>,
+    /// Tmpfs root path (set when --tmpfs is used), for validation.
+    pub tmpfs_root: Option<PathBuf>,
 }
 impl AppState {
     pub fn get_server(&self, id: &str) -> Result<mc_server_manager::ManagedServer, AppError> {
@@ -44,7 +46,7 @@ impl AppState {
 
 pub fn generate_token() -> String {
     const CHARSET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[]{}|;:,.<>?/~";
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut rng = rand::thread_rng();
     let len = rng.gen_range(40..=64);
     (0..len)
