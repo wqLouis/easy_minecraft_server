@@ -8,8 +8,10 @@
   import { logViewerState } from "$lib/stores";
 
   let { children } = $props();
-  let lv = $state({ open: false, serverId: "", serverName: "" });
-  logViewerState.subscribe((v) => (lv = v));
+  // Keep local state that syncs with the shared store for two-way binding
+  let lv = $state($logViewerState);
+  $effect(() => { lv = $logViewerState; });
+  $effect(() => { logViewerState.set(lv); });
 </script>
 
 <svelte:head><title>EazyMC Manager</title><link rel="icon" href={favicon} /></svelte:head>

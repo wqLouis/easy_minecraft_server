@@ -19,7 +19,6 @@
 		ChevronDownIcon,
 		PlusIcon,
 		ListIcon,
-		XIcon,
 		LoaderCircleIcon
 	} from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
@@ -30,6 +29,8 @@
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import { isAuthenticated, isConfigured, getApi } from '$lib/api';
+import { fmtCompact, fmtVersions } from '$lib/utils';
+import { typeOpts, loaderOpts, sortOpts } from '$lib/config/mod-filters';
 
 	let loading = $state(true);
 	let serverRunning = $state(false);
@@ -371,44 +372,9 @@
 		}
 	}
 
-	function fmt(n: number): string {
-		return n >= 1_000_000
-			? `${(n / 1_000_000).toFixed(1)}M`
-			: n >= 1_000
-				? `${(n / 1_000).toFixed(1)}K`
-				: `${n}`;
-	}
-	function fmtVersions(vs: string[]): string {
-		return vs.slice(0, 2).join(', ') + (vs.length > 2 ? '\u2026' : '');
-	}
 
-	const typeOpts = [
-		{ value: '', label: 'All types' },
-		{ value: 'mod', label: 'Mod' },
-		{ value: 'plugin', label: 'Plugin' },
-		{ value: 'datapack', label: 'Datapack' },
-		{ value: 'modpack', label: 'Modpack' },
-		{ value: 'shader', label: 'Shader' }
-	];
-	const loaderOpts = [
-		{ value: '', label: 'Any loader' },
-		{ value: 'fabric', label: 'Fabric' },
-		{ value: 'forge', label: 'Forge' },
-		{ value: 'neoforge', label: 'NeoForge' },
-		{ value: 'quilt', label: 'Quilt' },
-		{ value: 'paper', label: 'Paper' },
-		{ value: 'purpur', label: 'Purpur' },
-		{ value: 'spigot', label: 'Spigot' },
-		{ value: 'waterfall', label: 'Waterfall' },
-		{ value: 'velocity', label: 'Velocity' }
-	];
-	const sortOpts = [
-		{ value: 'relevance', label: 'Relevance' },
-		{ value: 'downloads', label: 'Downloads' },
-		{ value: 'follows', label: 'Follows' },
-		{ value: 'newest', label: 'Newest' },
-		{ value: 'updated', label: 'Updated' }
-	];
+
+
 	const extraVersions = $derived.by(() => {
 		return ['1.21.4', '1.21.3', '1.21.1', '1.20.6', '1.20.4', '1.20.1'].filter(
 			(v) => v !== mcVersion
@@ -666,7 +632,7 @@
 											</p>
 											<div class="flex flex-wrap items-center gap-1.5 pt-0.5">
 												<Badge variant="outline" class="text-[10px]"
-													>{fmt(r.downloads)} downloads</Badge
+													>{fmtCompact(r.downloads)} downloads</Badge
 												>
 												{#each r.loaders.slice(0, 3) as l}
 													<Badge variant="outline" class="text-[10px]">{l}</Badge>

@@ -8,6 +8,7 @@
   import * as Card from "$lib/components/ui/card/index.js";
   import { Separator } from "$lib/components/ui/separator/index.js";
   import { isAuthenticated, isConfigured, getApi } from "$lib/api";
+import { humanize, parseNum } from "$lib/utils";
   import type { JsonSchema, JsonSchemaProperty } from "$lib/types";
 
   let schema: JsonSchema | null = $state(null);
@@ -42,16 +43,6 @@
   }
 
   function updateField(key: string, value: unknown) { settings = { ...settings, [key]: value } }
-
-  function parseNum(raw: string, type: string): number | string {
-    if (raw === "") return "";
-    const n = type === "integer" ? parseInt(raw, 10) : parseFloat(raw);
-    return isNaN(n) ? raw : n;
-  }
-
-  function humanize(key: string): string {
-    return key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  }
 </script>
 
 <div class="mx-auto max-w-2xl px-6 py-6">
